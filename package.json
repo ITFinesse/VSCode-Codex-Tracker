@@ -1,0 +1,146 @@
+{
+  "name": "vscode-codex-tracker",
+  "displayName": "VSCode Codex Tracker",
+  "description": "Shows Codex rolling-window usage and local prompt token history.",
+  "version": "1.2.0",
+  "publisher": "ITFinesse",
+  "icon": "resources/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ITFinesse/VSCode-Codex-Tracker.git"
+  },
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Other",
+    "Visualization"
+  ],
+  "keywords": [
+    "Codex",
+    "OpenAI",
+    "usage",
+    "tokens",
+    "dashboard"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "codexUsage.showPanel",
+        "title": "Codex Usage: Show Panel"
+      },
+      {
+        "command": "codexUsage.refresh",
+        "title": "Codex Usage: Refresh"
+      },
+      {
+        "command": "codexUsage.showOutput",
+        "title": "Codex Usage: Show Output"
+      }
+    ],
+    "viewsContainers": {
+      "panel": [
+        {
+          "id": "codexUsage",
+          "title": "VSCode Codex Tracker",
+          "icon": "resources/codex-usage.svg"
+        }
+      ]
+    },
+    "views": {
+      "codexUsage": [
+        {
+          "type": "webview",
+          "id": "codexUsage.panel",
+          "name": "VSCode Codex Tracker",
+          "visibility": "visible"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "VSCode Codex Tracker",
+      "properties": {
+        "codexUsage.sessionsPath": {
+          "type": "string",
+          "default": "",
+          "description": "Codex session directory. Empty uses ~/.codex/sessions."
+        },
+        "codexUsage.codexPath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional path to the Codex executable. Empty automatically uses the OpenAI VS Code extension's bundled executable, then PATH."
+        },
+        "codexUsage.refreshIntervalSeconds": {
+          "type": "number",
+          "default": 60,
+          "minimum": 10,
+          "maximum": 3600,
+          "description": "How often the monitor rereads local Codex session files."
+        },
+        "codexUsage.historyLimit": {
+          "type": "number",
+          "default": 100,
+          "minimum": 10,
+          "maximum": 500,
+          "description": "Maximum number of recent prompts to show."
+        },
+        "codexUsage.warningThresholdPercent": {
+          "type": "number",
+          "default": 40,
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Show orange status text when either remaining usage window reaches this percentage."
+        },
+        "codexUsage.criticalThresholdPercent": {
+          "type": "number",
+          "default": 30,
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Show red status text when either remaining usage window reaches this percentage."
+        },
+        "codexUsage.warningColor": {
+          "type": "string",
+          "default": "#d97706",
+          "description": "Status-bar color used at the warning threshold."
+        },
+        "codexUsage.criticalColor": {
+          "type": "string",
+          "default": "#dc2626",
+          "description": "Status-bar color used at the critical threshold."
+        },
+        "codexUsage.belowFullColor": {
+          "type": "string",
+          "default": "#cccccc",
+          "description": "Status-bar color used when remaining usage is below 100% but above warning."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "npm run prepare-resources && tsc -p .",
+    "test": "npm run compile && node --test test/*.test.js",
+    "lint": "eslint src",
+    "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.js\" \"*.json\" \"*.md\"",
+    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.js\" \"*.json\" \"*.md\"",
+    "validate:package": "npm pack --dry-run",
+    "audit": "npm audit --omit=dev",
+    "verify": "npm run lint && npm run format:check && npm test && npm run validate:package && npm run audit",
+    "prepare-resources": "node scripts/copy-chartjs.cjs",
+    "watch": "tsc -watch -p .",
+    "package": "node scripts/package-vsix.cjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.61.1",
+    "@types/node": "^22.10.2",
+    "@types/vscode": "^1.95.0",
+    "eslint": "^10.7.0",
+    "prettier": "^3.9.5",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.64.0"
+  },
+  "dependencies": {
+    "chart.js": "^4.5.1"
+  }
+}
