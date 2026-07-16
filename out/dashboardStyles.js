@@ -29,6 +29,7 @@ exports.dashboardStyles = String.raw `    :root{
     .top-actions{margin-left:auto;color:var(--muted);white-space:nowrap}
     .build-meta{display:flex;gap:12px;color:var(--muted);font-size:11px;margin:-8px 0 12px}
     .leaderboard-settings{display:grid;gap:8px;border:1px solid var(--border);margin:14px 0 0;padding:10px;border-radius:6px}.leaderboard-settings label{display:grid;gap:4px;color:var(--muted)}.leaderboard-settings input[type=checkbox]{margin-right:6px}.leaderboard-settings input[type=text],.leaderboard-settings input[type=url]{width:100%}.leaderboard-settings button{justify-self:start}.leaderboard-help{margin:0;color:var(--muted);font-size:11px}.leaderboard-status-ok{color:var(--teal)}.leaderboard-status-error{color:var(--vscode-errorForeground,#f48771)}
+    .participate-toggle{display:flex!important;align-items:center;gap:8px;margin:0!important;cursor:pointer}.participate-toggle input{position:absolute;opacity:0;pointer-events:none}.participate-toggle span{position:relative;padding-left:44px;line-height:24px}.participate-toggle span::before{content:'';position:absolute;left:0;top:2px;width:34px;height:20px;border-radius:999px;background:var(--border);transition:background .15s ease}.participate-toggle span::after{content:'';position:absolute;left:3px;top:5px;width:14px;height:14px;border-radius:50%;background:var(--text);transition:transform .15s ease}.participate-toggle input:checked+span::before{background:var(--accent)}.participate-toggle input:checked+span::after{transform:translateX(14px)}.participate-toggle input:focus-visible+span::before{outline:2px solid var(--accent);outline-offset:2px}
     .icon-button{width:34px;height:34px;border:1px solid var(--border);border-radius:5px;background:var(--surface2);color:var(--text);cursor:pointer}
     .account-meta{margin:-10px 0 14px;color:var(--muted);text-align:center}
     .panel,.metric{border:1px solid var(--border);border-radius:7px;background:linear-gradient(180deg,color-mix(in srgb,var(--surface2) 42%,var(--surface)),var(--surface))}
@@ -82,7 +83,7 @@ exports.dashboardStyles = String.raw `    :root{
     .expand{border:0;background:transparent;color:var(--accent);cursor:pointer;flex:none}
     .prompt-full{margin-top:8px;color:var(--muted);white-space:pre-wrap}
     .empty{padding:28px;text-align:center;color:var(--muted)}
-    .settings{position:fixed;z-index:100;right:22px;top:auto;bottom:auto;width:315px;max-height:calc(100vh - 28px);overflow:auto;padding:16px;border:1px solid var(--border);border-radius:7px;background:var(--vscode-editorWidget-background,#252526);box-shadow:0 12px 36px #0006}
+    .settings{position:fixed;z-index:100;right:22px;top:auto;bottom:auto;width:520px;max-width:calc(100vw - 28px);max-height:calc(100vh - 28px);overflow:auto;padding:16px;border:1px solid var(--border);border-radius:7px;background:var(--vscode-editorWidget-background,#252526);box-shadow:0 12px 36px #0006}
     .settings[hidden],.hidden{display:none}
     .settings h2{font-size:15px;font-weight:700;margin:0 0 15px}
     .settings label{display:grid;gap:6px;margin:11px 0}
@@ -95,7 +96,13 @@ exports.dashboardStyles = String.raw `    :root{
     .save{width:100%;padding:8px;border:0;border-radius:4px;background:var(--vscode-button-background);color:var(--vscode-button-foreground);cursor:pointer}
     .chart-tooltip{position:fixed;z-index:30;pointer-events:none;padding:6px 8px;border:1px solid var(--border);border-radius:4px;background:var(--vscode-editorHoverWidget-background,#252526);box-shadow:0 4px 14px #0005;white-space:pre-line}
     .chart-tooltip[hidden]{display:none}
-    .leaderboard-popup{position:fixed;z-index:110;left:14px;right:14px;bottom:14px;padding:14px;border:1px solid var(--border);border-radius:7px;background:var(--vscode-editorWidget-background,#252526);box-shadow:0 -10px 30px #0008}.leaderboard-popup[hidden]{display:none}.leaderboard-popup-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}.leaderboard-popup iframe{display:block;width:100%;height:65vh;border:1px solid var(--border);background:var(--surface)}.leaderboard-popup button{padding:5px 10px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--text);cursor:pointer}
+    .leaderboard-popup{position:fixed;z-index:110;inset:0;padding:14px;border:0;background:var(--vscode-editorWidget-background,#252526);box-shadow:0 -10px 30px #0008;transform:translateY(100%);transition:transform 2s ease}
+    .leaderboard-popup.open{transform:translateY(0)}
+    .leaderboard-popup[hidden]{display:none}
+    .leaderboard-popup-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+    .leaderboard-popup iframe{display:block;width:100%;height:calc(100% - 92px);border:1px solid var(--border);background:var(--surface)}
+    .leaderboard-popup button,.leaderboard-links a{padding:5px 10px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--text);cursor:pointer;text-decoration:none}
+    .leaderboard-links{display:flex;gap:8px;margin-top:10px}
     @media(max-width:900px){.topbar{flex-wrap:wrap}.top-actions{width:100%;justify-content:flex-end}.spend-panel,.lower{grid-template-columns:1fr}.metrics{grid-template-columns:1fr 1fr}.settings{top:auto;bottom:auto}}
     @media(max-width:900px){#content{grid-template-columns:repeat(2,minmax(0,1fr))}}
     @media(max-width:540px){body{padding:14px}.metrics{grid-template-columns:1fr}.updated{display:none}.settings{left:14px;right:14px;width:auto}#content{grid-template-columns:1fr}}`;

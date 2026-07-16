@@ -64,7 +64,7 @@ exports.dashboardMarkup = String.raw `  <header class="topbar">
       </div>
       <fieldset class="leaderboard-settings">
         <legend>Leaderboard: vscodecodextracker.itfinesse.co.uk</legend>
-        <label><input id="leaderboardEnabled" type="checkbox"> Participate</label>
+        <label class="participate-toggle"><input id="leaderboardEnabled" type="checkbox"><span>Participate</span></label>
         <label>Public name<input id="leaderboardName" type="text" maxlength="32" value="Anonymous" autocomplete="off"></label>
         <button id="checkLeaderboardName" type="button">Check name</button><span id="leaderboardNameStatus" role="status"></span>
         <label>Account code<input id="leaderboardCode" type="text" minlength="16" maxlength="128" autocomplete="off"></label>
@@ -79,5 +79,10 @@ exports.dashboardMarkup = String.raw `  <header class="topbar">
   <section id="leaderboardPopup" class="leaderboard-popup" hidden>
     <div class="leaderboard-popup-head"><strong>Leaderboard</strong><button id="leaderboardClose" type="button">Close</button></div>
     <iframe title="Leaderboard" src="https://vscodecodextracker.itfinesse.co.uk" loading="lazy"></iframe>
+    <div class="leaderboard-links">
+      <a href="https://github.com/ITFinesse/VSCode-Codex-Tracker" target="_blank" rel="noopener noreferrer">GitHub</a>
+      <a href="https://marketplace.visualstudio.com/manage/publishers/itfinesse" target="_blank" rel="noopener noreferrer">Marketplace</a>
+      <a href="https://donate.stripe.com/7sY14q4DM6f81dC69Y8bS00" target="_blank" rel="noopener noreferrer">Donate</a>
+    </div>
   </section>`;
 //# sourceMappingURL=dashboardMarkup.js.map

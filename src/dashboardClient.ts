@@ -265,7 +265,6 @@ export const dashboardClient = String.raw`    const vscode = acquireVsCodeApi();
              + metric('Input Tokens', number(totals.input), 'input', palette[2], 'Tokens sent to Codex. The sparkline uses per-point timestamps.')
              + metric('Output Tokens', number(totals.output), 'output', palette[1], 'Tokens returned by Codex. The sparkline uses per-point timestamps.')
              + metric('Cached Tokens', number(totals.cached), 'cached', palette[0], 'Cached input tokens recorded by Codex. The sparkline uses per-point timestamps.')
-             + metric('Prompts', number(totals.requests), 'prompts', '#e6c43b', 'Number of prompts sent in the selected period.')
              + '</section>'
           : '') +
         ((visibility.showModels || visibility.showPrompts)
@@ -309,10 +308,10 @@ export const dashboardClient = String.raw`    const vscode = acquireVsCodeApi();
         ];
         buildChart('efficiency-chart', { type: 'bar', data: { labels: efficiencyLabels, datasets: efficiencyDatasets }, options: commonOptions('Average tokens per prompt', false, efficiencyLabels) });
       }
-       if ($('prompts-chart')) {
-         const promptLabels = timeLabels(dailyPrompts);
-         buildChart('prompts-chart', { type: 'bar', data: { labels: promptLabels, datasets: [{ label: 'Prompts', data: dailyPrompts.map((point, index) => ({ x: index, y: Number(point.prompts) || 0, timestamp: point.time })), parsing: false, backgroundColor: translucent('#e6c43b'), borderColor: '#e6c43b', borderWidth: 1, borderRadius: 3, barPercentage: .8, categoryPercentage: .9, pointStyle: 'rect' }] }, options: commonOptions('Prompts over time', false, promptLabels) });
-       }
+      if ($('prompts-chart')) {
+        const promptLabels = timeLabels(dailyPrompts);
+        buildChart('prompts-chart', { type: 'bar', data: { labels: promptLabels, datasets: [{ label: 'Prompts', data: dailyPrompts.map((point, index) => ({ x: index, y: Number(point.prompts) || 0, timestamp: point.time })), parsing: false, backgroundColor: translucent('#e6c43b'), borderColor: '#e6c43b', borderWidth: 1, borderRadius: 3, barPercentage: .8, categoryPercentage: .9, pointStyle: 'rect' }] }, options: commonOptions('Prompts over time', false, promptLabels) });
+      }
       if ($('tokens-chart')) {
          const tokenLabels = timeLabels(points);
          const options = commonOptions('Tokens over time', false, tokenLabels);
@@ -328,8 +327,11 @@ export const dashboardClient = String.raw`    const vscode = acquireVsCodeApi();
       }
       const apply = () => {
         const query = $('search').value.toLowerCase();
+        let matchedRows = 0;
         document.querySelectorAll('[data-row]').forEach(row => {
-          row.hidden = !row.textContent.toLowerCase().includes(query);
+          const matches = row.textContent.toLowerCase().includes(query);
+          row.hidden = !matches || matchedRows >= visibleRows;
+          if (matches) matchedRows += 1;
         });
         $('tableScroll').style.maxHeight = (visibleRows * 38 + 34) + 'px';
       };
@@ -386,8 +388,16 @@ export const dashboardClient = String.raw`    const vscode = acquireVsCodeApi();
       vscode.setState(state);
       render();
     };
-    $('leaderboardButton').onclick = () => { $('leaderboardPopup').hidden = false; };
-    $('leaderboardClose').onclick = () => { $('leaderboardPopup').hidden = true; };
+    $('leaderboardButton').onclick = () => {
+      const popup = $('leaderboardPopup');
+      popup.hidden = false;
+      requestAnimationFrame(() => popup.classList.add('open'));
+    };
+    $('leaderboardClose').onclick = () => {
+      const popup = $('leaderboardPopup');
+      popup.classList.remove('open');
+      setTimeout(() => { popup.hidden = true; }, 2000);
+    };
     $('settingsForm').onsubmit = event => {
       event.preventDefault();
       ['showSpend', 'showMetrics', 'showModels', 'showTokens', 'showPrompts'].forEach(key => visibility[key] = $(key).checked);
