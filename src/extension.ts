@@ -1,4 +1,5 @@
 import * as fs from "node:fs/promises";
+import * as fsSync from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { spawn } from "node:child_process";
@@ -6,6 +7,7 @@ import * as readline from "node:readline";
 import { randomBytes } from "node:crypto";
 import * as vscode from "vscode";
 import { professionalPanelHtml } from "./dashboard";
+import { checkLeaderboardName, readLeaderboardSettings, saveLeaderboardSettings, submitLeaderboardUsage } from "./leaderboard";
 import { normalizeAppearanceSettings, parseRateLimitResponse, parseSessionText } from "./usage";
 
 type JsonObject = Record<string, unknown>;
@@ -52,6 +54,9 @@ let snapshotCache: UsageSnapshot | undefined;
 let nextRefreshAt = 0;
 let displayLocale: string | undefined;
 let displayTimeZone: string | undefined;
+let extensionVersion = "V:—";
+let extensionBuildTime = "T:--:--";
+let leaderboardForWebview: { enabled: boolean; name: string; code: string } | undefined;
 const sessionFileCache = new Map<string, { size: number; modified: number; prompts: PromptRecord[] }>();
 let rateLimitsCache:
   { expiresAt: number; value: { fiveHour: LimitWindow; weekly: LimitWindow; account?: AccountSummary } | undefined } | undefined;
@@ -60,12 +65,20 @@ const RATE_LIMIT_CACHE_MS = 15_000;
 const DIRECTORY_SCAN_CONCURRENCY = 8;
 
 export function activate(context: vscode.ExtensionContext): void {
+  extensionVersion = `V:${String(context.extension.packageJSON.version ?? "—")}`;
+  try {
+    const buildTime = fsSync.statSync(path.join(context.extensionPath, "out", "extension.js")).mtime;
+    extensionBuildTime = `T:${new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(buildTime)}`;
+  } catch {
+    extensionBuildTime = "T:--:--";
+  }
   const activationStartedAt = performance.now();
   const resolvedDateTime = new Intl.DateTimeFormat().resolvedOptions();
   displayLocale = resolvedDateTime.locale;
   displayTimeZone = resolvedDateTime.timeZone;
   output = vscode.window.createOutputChannel("Codex Usage Monitor", { log: true });
   context.subscriptions.push(output);
+  void readLeaderboardSettings(context).then((settings) => { leaderboardForWebview = settings; });
   output.info("Extension activated.");
   output.info(`Performance: activation completed in ${(performance.now() - activationStartedAt).toFixed(1)}ms.`);
   // Right-aligned status items are ordered by priority; keep the 5H segment first.
@@ -95,6 +108,7 @@ export function activate(context: vscode.ExtensionContext): void {
         snapshotCache = snapshot;
         nextRefreshAt = Date.now() + readAppearanceSettings().refreshIntervalSeconds * 1_000;
         updateStatusBar(snapshot);
+        void submitLeaderboardUsage(context, snapshot.prompts, output);
         if (webviewReady) {
           postSnapshot(snapshotCache);
         } else {
@@ -151,7 +165,7 @@ export function activate(context: vscode.ExtensionContext): void {
         context.subscriptions
       );
       view.webview.onDidReceiveMessage(
-        (message: { command?: string; appearance?: unknown; error?: unknown; locale?: string; timeZone?: string }) => {
+        (message: { command?: string; appearance?: unknown; leaderboard?: unknown; error?: unknown; locale?: string; timeZone?: string }) => {
           if (message.command === "ready") {
             output.info("Webview: ready message received.");
             displayLocale = typeof message.locale === "string" && message.locale ? message.locale : displayLocale;
@@ -165,6 +179,15 @@ export function activate(context: vscode.ExtensionContext): void {
             }
           } else if (message.command === "saveAppearance") {
             void saveAppearanceSettings(message.appearance).then(refresh, () => undefined);
+          } else if (message.command === "saveLeaderboard") {
+            void saveLeaderboardSettings(context, message.leaderboard)
+              .then(() => readLeaderboardSettings(context))
+              .then((settings) => { leaderboardForWebview = settings; return refresh(); })
+              .catch((error) => view.webview.postMessage({ type: "leaderboardError", message: error instanceof Error ? error.message : String(error) }));
+          } else if (message.command === "checkLeaderboardName") {
+            void checkLeaderboardName(context, message.leaderboard)
+              .then((result) => view.webview.postMessage({ type: "leaderboardName", ...result }))
+              .catch((error) => view.webview.postMessage({ type: "leaderboardName", available: false, message: error instanceof Error ? error.message : String(error) }));
           } else if (message.command === "webviewError") {
             const error = String(message.error ?? "unknown error");
             output.error(`Dashboard webview error: ${error}`);
@@ -606,8 +629,10 @@ function postSnapshot(snapshot: UsageSnapshot): void {
             }
           : undefined,
         appearance: readAppearanceSettings(),
+        leaderboard: leaderboardForWebview,
         scannedAt: formatDateTime(snapshot.scannedAt),
-        nextRefreshAt
+        nextRefreshAt,
+        metadata: { version: extensionVersion, buildTime: extensionBuildTime, lastUpdate: formatClock(snapshot.scannedAt) }
       }
     })
     .then(
@@ -634,6 +659,16 @@ function formatDateTime(date: Date): string {
   return new Intl.DateTimeFormat(displayLocale, {
     day: "2-digit",
     month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+    ...(displayTimeZone ? { timeZone: displayTimeZone } : {})
+  }).format(date);
+}
+
+function formatClock(date: Date): string {
+  return new Intl.DateTimeFormat(displayLocale, {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",

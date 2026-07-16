@@ -36,6 +36,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.activate = activate;
 exports.deactivate = deactivate;
 const fs = __importStar(require("node:fs/promises"));
+const fsSync = __importStar(require("node:fs"));
 const os = __importStar(require("node:os"));
 const path = __importStar(require("node:path"));
 const node_child_process_1 = require("node:child_process");
@@ -43,6 +44,7 @@ const readline = __importStar(require("node:readline"));
 const node_crypto_1 = require("node:crypto");
 const vscode = __importStar(require("vscode"));
 const dashboard_1 = require("./dashboard");
+const leaderboard_1 = require("./leaderboard");
 const usage_1 = require("./usage");
 let panel;
 let webviewReady = false;
@@ -53,18 +55,30 @@ let snapshotCache;
 let nextRefreshAt = 0;
 let displayLocale;
 let displayTimeZone;
+let extensionVersion = "V:—";
+let extensionBuildTime = "T:--:--";
+let leaderboardForWebview;
 const sessionFileCache = new Map();
 let rateLimitsCache;
 let rateLimitsInFlight;
 const RATE_LIMIT_CACHE_MS = 15_000;
 const DIRECTORY_SCAN_CONCURRENCY = 8;
 function activate(context) {
+    extensionVersion = `V:${String(context.extension.packageJSON.version ?? "—")}`;
+    try {
+        const buildTime = fsSync.statSync(path.join(context.extensionPath, "out", "extension.js")).mtime;
+        extensionBuildTime = `T:${new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(buildTime)}`;
+    }
+    catch {
+        extensionBuildTime = "T:--:--";
+    }
     const activationStartedAt = performance.now();
     const resolvedDateTime = new Intl.DateTimeFormat().resolvedOptions();
     displayLocale = resolvedDateTime.locale;
     displayTimeZone = resolvedDateTime.timeZone;
     output = vscode.window.createOutputChannel("Codex Usage Monitor", { log: true });
     context.subscriptions.push(output);
+    void (0, leaderboard_1.readLeaderboardSettings)(context).then((settings) => { leaderboardForWebview = settings; });
     output.info("Extension activated.");
     output.info(`Performance: activation completed in ${(performance.now() - activationStartedAt).toFixed(1)}ms.`);
     // Right-aligned status items are ordered by priority; keep the 5H segment first.
@@ -93,6 +107,7 @@ function activate(context) {
                 snapshotCache = snapshot;
                 nextRefreshAt = Date.now() + readAppearanceSettings().refreshIntervalSeconds * 1_000;
                 updateStatusBar(snapshot);
+                void (0, leaderboard_1.submitLeaderboardUsage)(context, snapshot.prompts, output);
                 if (webviewReady) {
                     postSnapshot(snapshotCache);
                 }
@@ -161,6 +176,17 @@ function activate(context) {
                 }
                 else if (message.command === "saveAppearance") {
                     void saveAppearanceSettings(message.appearance).then(refresh, () => undefined);
+                }
+                else if (message.command === "saveLeaderboard") {
+                    void (0, leaderboard_1.saveLeaderboardSettings)(context, message.leaderboard)
+                        .then(() => (0, leaderboard_1.readLeaderboardSettings)(context))
+                        .then((settings) => { leaderboardForWebview = settings; return refresh(); })
+                        .catch((error) => view.webview.postMessage({ type: "leaderboardError", message: error instanceof Error ? error.message : String(error) }));
+                }
+                else if (message.command === "checkLeaderboardName") {
+                    void (0, leaderboard_1.checkLeaderboardName)(context, message.leaderboard)
+                        .then((result) => view.webview.postMessage({ type: "leaderboardName", ...result }))
+                        .catch((error) => view.webview.postMessage({ type: "leaderboardName", available: false, message: error instanceof Error ? error.message : String(error) }));
                 }
                 else if (message.command === "webviewError") {
                     const error = String(message.error ?? "unknown error");
@@ -569,8 +595,10 @@ function postSnapshot(snapshot) {
                 }
                 : undefined,
             appearance: readAppearanceSettings(),
+            leaderboard: leaderboardForWebview,
             scannedAt: formatDateTime(snapshot.scannedAt),
-            nextRefreshAt
+            nextRefreshAt,
+            metadata: { version: extensionVersion, buildTime: extensionBuildTime, lastUpdate: formatClock(snapshot.scannedAt) }
         }
     })
         .then((delivered) => output.info(`Webview: snapshot delivery ${delivered ? "accepted" : "rejected"}; render handoff ${(performance.now() - renderStartedAt).toFixed(1)}ms.`), (error) => output.error(`Webview: snapshot delivery failed: ${String(error)}`));
@@ -590,6 +618,15 @@ function formatDateTime(date) {
     return new Intl.DateTimeFormat(displayLocale, {
         day: "2-digit",
         month: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hourCycle: "h23",
+        ...(displayTimeZone ? { timeZone: displayTimeZone } : {})
+    }).format(date);
+}
+function formatClock(date) {
+    return new Intl.DateTimeFormat(displayLocale, {
         hour: "2-digit",
         minute: "2-digit",
         second: "2-digit",

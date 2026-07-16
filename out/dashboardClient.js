@@ -11,6 +11,9 @@ exports.dashboardClient = String.raw `    const vscode = acquireVsCodeApi();
     let visibleRows = 4;
     let sortMode = 'latest';
     let nextRefreshAt = 0;
+    let lastUpdated = '';
+    let leaderboard = { enabled: false, name: 'Anonymous', code: '' };
+    let cardLayout = viewState.cardLayout && typeof viewState.cardLayout === 'object' ? viewState.cardLayout : {};
     const defaultVisibility = { showSpend: true, showMetrics: true, showModels: true, showTokens: true, showPrompts: true };
     let visibility = defaultVisibility;
     try {
@@ -27,6 +30,14 @@ exports.dashboardClient = String.raw `    const vscode = acquireVsCodeApi();
 
     const number = v => new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(v || 0);
     const money = (v, d = 2) => '$' + Number(v || 0).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
+    const updateLabel = () => {
+      if (!snapshot) return;
+      const seconds = Math.max(0, Math.ceil((nextRefreshAt - Date.now()) / 1000));
+      const remaining = seconds > 0
+        ? seconds >= 60 ? Math.floor(seconds / 60) + 'm ' + String(seconds % 60).padStart(2, '0') + 's' : seconds + 's'
+        : 'Refreshing…';
+      $('updated').textContent = (seconds > 0 ? 'Update in: ' : '') + remaining + ', Last: ' + lastUpdated;
+    };
     const filtered = ps => rangeDays ? ps.filter(p => p.time >= Date.now() - rangeDays * 86400000) : ps;
     const timeline = ps => [...ps].sort((a, b) => a.time - b.time);
     const setDateFormat = (locale, timeZone) => {
@@ -68,7 +79,7 @@ exports.dashboardClient = String.raw `    const vscode = acquireVsCodeApi();
           tooltip: { callbacks: { title: items => { const point = items[0]?.raw; return point?.timestamp ? tooltipDateFormatter.format(new Date(point.timestamp)) + ' ' + axisTimeFormatter.format(new Date(point.timestamp)) : ''; }, label: item => item.dataset.label + ': ' + (item.dataset.unit === 'money' ? money(item.parsed.y, 4) : number(item.parsed.y)) } }
         },
         scales: {
-          x: { type: 'category', title: { display: !compact, text: 'Time', color: theme.text }, ticks: { color: theme.text, autoSkip: true, display: !compact, maxRotation: 45, minRotation: 45, callback: value => labels[value] || '' }, grid: { display: false }, border: { display: false } },
+          x: { type: 'category', title: { display: false, text: 'Time', color: theme.text }, ticks: { color: theme.text, autoSkip: true, display: !compact, maxRotation: 45, minRotation: 45, callback: value => labels[value] || '' }, grid: { display: false }, border: { display: false } },
           y: { title: { display: !compact, text: 'Value', color: theme.text }, ticks: { color: theme.text, display: !compact, callback: chartText }, grid: { color: theme.grid + '66' }, border: { display: false }, beginAtZero: true }
         }
       };
@@ -138,6 +149,53 @@ exports.dashboardClient = String.raw `    const vscode = acquireVsCodeApi();
       };
     }
 
+    const cardId = card => {
+      if (card.dataset.card) return card.dataset.card;
+      if (card.classList.contains('spend-panel')) return 'spend';
+      if (card.classList.contains('metric')) return 'metric-' + [...card.parentElement.children].indexOf(card);
+      if (card.classList.contains('table-panel')) return 'table';
+      const title = card.querySelector('h2')?.textContent || '';
+      return title.includes('Model') ? 'model' : title.includes('Prompts') ? 'prompts' : 'tokens';
+    };
+    const bindCards = () => {
+      const cards = [...document.querySelectorAll('.spend-panel,.metric,.token-panel,.lower>.panel,.table-panel')];
+      cards.forEach(card => {
+        const id = cardId(card);
+        card.dataset.card = id;
+        card.draggable = true;
+        const size = vscode.getState()?.cardSizes?.[id];
+        if (size?.height) card.style.height = size.height + 'px';
+        card.ondragstart = () => { card.classList.add('dragging'); };
+        card.ondragend = () => { card.classList.remove('dragging'); };
+        card.ondragover = event => event.preventDefault();
+        card.ondrop = event => {
+          event.preventDefault();
+          const dragging = document.querySelector('.dragging');
+          if (!dragging || dragging === card) return;
+          const fromParent = dragging.parentElement;
+          const toParent = card.parentElement;
+          toParent.insertBefore(dragging, card);
+          [fromParent, toParent].forEach(parent => {
+            cardLayout[parent.id || parent.className] = [...parent.children].map(item => item.dataset.card).filter(Boolean);
+          });
+          vscode.setState({ ...vscode.getState(), cardLayout });
+        };
+        card.onpointerup = () => {
+          const cardSizes = { ...(vscode.getState()?.cardSizes || {}) };
+          cardSizes[id] = { height: card.offsetHeight };
+          vscode.setState({ ...vscode.getState(), cardSizes });
+        };
+      });
+      Object.entries(cardLayout).forEach(([parentKey, order]) => {
+        const parent = parentKey === 'content' ? $('content') : document.querySelector('.' + parentKey);
+        if (!parent || !Array.isArray(order)) return;
+        order.forEach(id => {
+          const item = cards.find(child => child.dataset.card === id);
+          if (item) parent.appendChild(item);
+        });
+      });
+    };
+
     function render() {
       if (!snapshot) return;
 
@@ -169,7 +227,7 @@ exports.dashboardClient = String.raw `    const vscode = acquireVsCodeApi();
         cost: acc.cost + (p.cost || 0),
         requests: acc.requests + 1
       }), { input: 0, output: 0, cached: 0, cost: 0, requests: 0 });
-      const metric = (name, value, key, color, info) => '<article class="metric"><div class="eyebrow">' + name + ' <button class="info" data-info="' + info + '">i</button></div><div class="metric-value">' + value + '</div>' + canvas('metric-' + key, 45, name + ' trend') + '</article>';
+      const metric = (name, value, key, color, info) => '<article class="metric" data-card="metric-' + key + '" draggable="true"><div class="eyebrow">' + name + ' <button class="info" data-info="' + info + '">i</button></div><div class="metric-value">' + value + '</div>' + canvas('metric-' + key, 45, name + ' trend') + '</article>';
       const group = models(prompts);
       $('fiveHour').textContent = snapshot.fiveHour.remaining;
       $('fiveReset').textContent = 'Reset ' + snapshot.fiveHour.reset;
@@ -202,24 +260,25 @@ exports.dashboardClient = String.raw `    const vscode = acquireVsCodeApi();
         (visibility.showSpend
           ? '<section class="panel spend-panel"><div><div class="eyebrow">Total Spend <button class="info" data-info="Estimated prompt spend across the selected period.">i</button></div><div class="big-value">' + money(totals.cost) + '</div><div class="trend">Current range <span>per-point timestamps</span></div></div><div>' + canvas('spend-chart', 220, 'Spend over time') + '</div></section>'
           : '') +
+        (visibility.showTokens
+          ? '<section class="panel token-panel"><h2 class="panel-title">Tokens Over Time <button class="info" data-info="Input and cached tokens use the left axis; output uses the right axis.">i</button></h2>' + canvas('tokens-chart', 260, 'Input, output, and cached tokens over time') + '</section>'
+          : '') +
         (visibility.showMetrics
           ? '<section class="metrics">'
-            + metric('Input Tokens', number(totals.input), 'input', palette[2], 'Tokens sent to Codex. The sparkline uses per-point timestamps.')
-            + metric('Output Tokens', number(totals.output), 'output', palette[1], 'Tokens returned by Codex. The sparkline uses per-point timestamps.')
-            + metric('Cached Tokens', number(totals.cached), 'cached', palette[0], 'Cached input tokens recorded by Codex. The sparkline uses per-point timestamps.')
-            + '</section>'
+             + metric('Input Tokens', number(totals.input), 'input', palette[2], 'Tokens sent to Codex. The sparkline uses per-point timestamps.')
+             + metric('Output Tokens', number(totals.output), 'output', palette[1], 'Tokens returned by Codex. The sparkline uses per-point timestamps.')
+             + metric('Cached Tokens', number(totals.cached), 'cached', palette[0], 'Cached input tokens recorded by Codex. The sparkline uses per-point timestamps.')
+             + metric('Prompts', number(totals.requests), 'prompts', '#e6c43b', 'Number of prompts sent in the selected period.')
+             + '</section>'
           : '') +
-        ((visibility.showModels || visibility.showTokens || visibility.showPrompts)
+        ((visibility.showModels || visibility.showPrompts)
           ? '<section class="lower">'
             + (visibility.showModels
-              ? '<article class="panel"><h2 class="panel-title">Usage by Model &amp; Cost</h2><div class="model-chart">' + canvas('model-chart', 190, 'Usage by model and cost') + '</div><div class="model-list">' + group.map((g, i) => '<div class="model-row" data-model-index="' + i + '" role="button" tabindex="0" title="Toggle ' + esc(g.name) + '"><i class="swatch" style="background:' + palette[i % palette.length] + '"></i><span>' + esc(g.name) + '</span><span>' + money(g.cost) + '</span><span class="pct">' + (totals.cost ? (g.cost / totals.cost * 100).toFixed(1) : '0.0') + '%</span></div>').join('') + '</div><h3 class="efficiency-title">Average tokens per prompt</h3>' + canvas('efficiency-chart', 170, 'Average input and output tokens per prompt by model') + '</article>'
+               ? '<article class="panel"><h2 class="panel-title">Usage by Model &amp; Cost</h2><div class="model-chart">' + canvas('model-chart', 190, 'Usage by model and cost') + '</div><div class="model-list">' + group.map((g, i) => '<div class="model-row" data-model-index="' + i + '" role="button" tabindex="0" title="Toggle ' + esc(g.name) + '"><i class="swatch" style="background:' + palette[i % palette.length] + '"></i><span>' + esc(g.name) + '</span><span>' + money(g.cost) + '</span><span class="pct">' + (totals.cost ? (g.cost / totals.cost * 100).toFixed(1) : '0.0') + '%</span></div>').join('') + '</div></article><article class="panel"><h2 class="panel-title">Average tokens per prompt</h2>' + canvas('efficiency-chart', 170, 'Average input and output tokens per prompt by model') + '</article>'
               : '')
              + (visibility.showPrompts
                ? '<article class="panel"><h2 class="panel-title">Prompts <button class="info" data-info="Number of prompts sent each day in the selected period.">i</button></h2>' + canvas('prompts-chart', 170, 'Prompts over time') + '</article>'
                : '')
-             + (visibility.showTokens
-                ? '<article class="panel"><h2 class="panel-title">Tokens Over Time <button class="info" data-info="Input and output use the left axis; cached tokens use the right axis.">i</button></h2>' + canvas('tokens-chart', 260, 'Input, output, and cached tokens over time') + '</article>'
-              : '')
             + '</section>'
           : '') +
         (visibility.showPrompts
@@ -264,9 +323,10 @@ exports.dashboardClient = String.raw `    const vscode = acquireVsCodeApi();
         const tokenTick = value => value >= 1000000 ? (value / 1000000).toFixed(1) + 'M' : value >= 1000 ? Math.round(value / 1000) + 'k' : String(value);
         options.scales.y.title = { display: true, text: 'Input / Output', color: theme.text };
         options.scales.y.ticks = { color: theme.text, stepSize: 100000, callback: tokenTick };
-        options.scales.yCached = { position: 'right', beginAtZero: true, ticks: { color: theme.text, stepSize: 100000, callback: tokenTick }, title: { display: true, text: 'Cached', color: theme.text }, grid: { drawOnChartArea: false }, border: { display: false } };
+        options.scales.yOutput = { position: 'right', beginAtZero: true, ticks: { color: theme.text, stepSize: 100000, callback: tokenTick }, title: { display: true, text: 'Output', color: theme.text }, grid: { drawOnChartArea: false }, border: { display: false } };
+        options.scales.yCached = { position: 'right', beginAtZero: true, offset: true, ticks: { color: theme.text, stepSize: 100000, callback: tokenTick }, title: { display: true, text: 'Cached', color: theme.text }, grid: { drawOnChartArea: false }, border: { display: false } };
         if (!noMotion) options.animations = { tension: { duration: 1600, easing: 'easeInOutSine', from: .25, to: .4, loop: true } };
-         const tokenDatasets = [lineDataset('Input', points, 'input', palette[2], true), lineDataset('Output', points, 'output', palette[1], true), lineDataset('Cached', points, 'cached', palette[0], true, 'yCached')].sort((a, b) => b.data.reduce((sum, point) => sum + point.y, 0) - a.data.reduce((sum, point) => sum + point.y, 0));
+         const tokenDatasets = [lineDataset('Input', points, 'input', palette[2], true), lineDataset('Output', points, 'output', palette[1], true, 'yOutput'), lineDataset('Cached', points, 'cached', palette[0], true, 'yCached')].sort((a, b) => b.data.reduce((sum, point) => sum + point.y, 0) - a.data.reduce((sum, point) => sum + point.y, 0));
          buildChart('tokens-chart', { type: 'line', data: { labels: tokenLabels, datasets: tokenDatasets }, options });
       }
       const apply = () => {
@@ -293,6 +353,7 @@ exports.dashboardClient = String.raw `    const vscode = acquireVsCodeApi();
         apply();
       }
 
+      bindCards();
       bindTips();
     }
 
@@ -305,7 +366,31 @@ exports.dashboardClient = String.raw `    const vscode = acquireVsCodeApi();
       };
     });
     document.querySelectorAll('.range').forEach(button => button.classList.toggle('active', Number(button.dataset.days) === rangeDays));
-    $('settingsToggle').onclick = () => $('settings').hidden = !$('settings').hidden;
+    const settingsToggle = $('settingsToggle');
+    const settingsPanel = $('settings');
+    const positionSettings = () => {
+      const rect = settingsToggle.getBoundingClientRect();
+      settingsPanel.style.right = Math.max(14, window.innerWidth - rect.right) + 'px';
+      settingsPanel.style.bottom = 'auto';
+      settingsPanel.style.top = '14px';
+      const upwardTop = rect.top - settingsPanel.offsetHeight - 8;
+      if (upwardTop >= 14) settingsPanel.style.top = upwardTop + 'px';
+    };
+    settingsToggle.onclick = () => {
+      settingsPanel.hidden = !settingsPanel.hidden;
+      if (!settingsPanel.hidden) positionSettings();
+    };
+    window.addEventListener('resize', () => { if (!settingsPanel.hidden) positionSettings(); });
+    $('resetLayout').onclick = () => {
+      cardLayout = {};
+      const state = { ...vscode.getState() };
+      delete state.cardLayout;
+      delete state.cardSizes;
+      vscode.setState(state);
+      render();
+    };
+    $('leaderboardButton').onclick = () => { $('leaderboardPopup').hidden = false; };
+    $('leaderboardClose').onclick = () => { $('leaderboardPopup').hidden = true; };
     $('settingsForm').onsubmit = event => {
       event.preventDefault();
       ['showSpend', 'showMetrics', 'showModels', 'showTokens', 'showPrompts'].forEach(key => visibility[key] = $(key).checked);
@@ -324,8 +409,14 @@ exports.dashboardClient = String.raw `    const vscode = acquireVsCodeApi();
           criticalColor: $('criticalColor').value
         }
       });
+      vscode.postMessage({ command: 'saveLeaderboard', leaderboard: { enabled: $('leaderboardEnabled').checked, name: $('leaderboardName').value, code: $('leaderboardCode').value } });
       $('settings').hidden = true;
       render();
+    };
+    $('checkLeaderboardName').onclick = () => {
+      $('leaderboardNameStatus').textContent = 'Checking…';
+      $('leaderboardNameStatus').className = '';
+      vscode.postMessage({ command: 'checkLeaderboardName', leaderboard: { name: $('leaderboardName').value, code: $('leaderboardCode').value } });
     };
     document.addEventListener('click', event => {
       const button = event.target.closest('[data-expand]');
@@ -337,7 +428,7 @@ exports.dashboardClient = String.raw `    const vscode = acquireVsCodeApi();
     setInterval(() => {
       if (!snapshot || document.hidden) return;
       const seconds = Math.max(0, Math.ceil((nextRefreshAt - Date.now()) / 1000));
-      $('updated').textContent = 'Updated ' + snapshot.scannedAt + ' · Update in: ' + (seconds >= 60 ? Math.floor(seconds / 60) + 'm ' + String(seconds % 60).padStart(2, '0') + 's' : seconds + 's');
+      updateLabel();
     }, 1000);
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) {
@@ -354,14 +445,31 @@ exports.dashboardClient = String.raw `    const vscode = acquireVsCodeApi();
         $('content').textContent = data.message;
         return;
       }
+      if (data.type === 'leaderboardName' || data.type === 'leaderboardError') {
+        const status = $('leaderboardNameStatus');
+        status.textContent = data.message || 'Could not save leaderboard settings.';
+        status.className = data.available ? 'leaderboard-status-ok' : 'leaderboard-status-error';
+        return;
+      }
       if (data.type !== 'snapshot') return;
       snapshot = data.snapshot;
       nextRefreshAt = snapshot.nextRefreshAt;
+      const metadata = data.metadata ?? snapshot.metadata;
+      lastUpdated = metadata?.lastUpdate || snapshot.scannedAt;
+      if (metadata) {
+        $('versionMeta').textContent = metadata.version;
+        $('buildTimeMeta').textContent = metadata.buildTime;
+      }
       const appearance = snapshot.appearance;
+      leaderboard = snapshot.leaderboard || leaderboard;
+      $('leaderboardEnabled').checked = leaderboard.enabled === true;
+      $('leaderboardName').value = leaderboard.name || 'Anonymous';
+      $('leaderboardCode').value = leaderboard.code || '';
       ['refreshIntervalSeconds', 'warningThreshold', 'criticalThreshold', 'belowFullColor', 'warningColor', 'criticalColor'].forEach(key => $(key).value = appearance[key]);
       $('defaultRangeDays').value = String(rangeDays);
       ['showSpend', 'showMetrics', 'showModels', 'showTokens', 'showPrompts'].forEach(key => $(key).checked = visibility[key] !== false);
       render();
+      updateLabel();
     });
     setTimeout(() => vscode.postMessage({
       command: 'ready',

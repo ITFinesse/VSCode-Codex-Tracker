@@ -1,32 +1,60 @@
-# Codex Usage Monitor
+# VSCode Codex Tracker
 
-Currently in BETA! <font=0.5px features may change</font>
+VSCode Codex Tracker is a VS Code extension for monitoring local Codex usage
+in a focused status bar and panel dashboard.
 
->
+## Features
 
-A VS Code extension that displays local Codex usage information in the status
-bar and a detailed panel.
+- Live five-hour and weekly usage windows with reset times.
+- Status bar indicators that open the tracker panel.
+- Local prompt history with input, output, and cached token counts.
+- Estimated spend and usage charts.
+- Prompt, token, model, and efficiency views.
+- Date-range filters, custom ranges, search, sorting, and row limits.
+- Resizable and rearrangeable dashboard cards, with layout reset.
+- Configurable refresh interval, thresholds, colors, and history limit.
+- Account and plan details when available from the local Codex source.
+- Optional community leaderboard participation.
+- Anonymous leaderboard names use a generated numeric suffix so identities do
+  not all share the same public name.
+- Leaderboard view includes aggregate input tokens and prompt totals.
+- Leaderboard popup opens from the dashboard without leaving the panel.
 
-It reads the local Codex session journal (`~/.codex/sessions`) and shows every
-user prompt and the token usage recorded after that prompt. Clicking the status
-bar opens its view in VS Code's bottom Panel area; use **Codex Usage: Refresh**
-or the Refresh button to reread the journal immediately.
+## Privacy
 
-Middle Lower Panel:
-<img src="resources/image.png" alt="VS Code Codex Tracker screenshot" width="700">
+Usage collection reads local Codex session data. Prompt text and token details
+remain local to the extension dashboard.
 
-Status Bar:
-<img src="resources/statusbar.png" alt="VS Code Codex Tracker screenshot" width="700">
+Leaderboard participation is optional. When enabled, only a public name,
+cumulative aggregate input-token total, cumulative prompt count, and update
+metadata are submitted. Prompts, output text, file paths, account credentials,
+and raw authentication tokens are not submitted.
 
-The status text is:
+Disable **Participate** in the dashboard settings at any time.
 
-`5H: 00% / Rst: Time | Weekly: 00% / Rst: Date`
+## Installation
 
-The extension asks the locally installed Codex CLI's `app-server` for
-`account/rateLimits/read`. It never sends your Codex auth token to a web
-endpoint and never displays stale session-journal quota percentages. If the
-live local source is unavailable, it displays `--%` and `--` instead of an
-incorrect cached value.
+Install the latest VSIX from the
+[GitHub Releases](https://github.com/ITFinesse/VSCode-Codex-Tracker/releases)
+page, then use **Extensions: Install from VSIX...** in VS Code.
+
+The extension is also published through the
+[ITFinesse Marketplace publisher](https://marketplace.visualstudio.com/manage/publishers/itfinesse).
+
+## Settings
+
+- `codexUsage.sessionsPath`: optional Codex session directory override.
+- `codexUsage.codexPath`: optional Codex executable path override.
+- `codexUsage.refreshIntervalSeconds`: dashboard refresh interval, from 10
+  seconds to 1 hour.
+- `codexUsage.historyLimit`: maximum number of recent prompts to display.
+- `codexUsage.warningThresholdPercent`: warning threshold for usage windows.
+- `codexUsage.criticalThresholdPercent`: critical threshold for usage windows.
+- `codexUsage.warningColor`: warning status-bar color.
+- `codexUsage.criticalColor`: critical status-bar color.
+- `codexUsage.belowFullColor`: normal status-bar color.
+- `codexUsage.leaderboardEnabled`: enable or disable aggregate submissions.
+- `codexUsage.leaderboardName`: public leaderboard name.
 
 ## Development
 
@@ -35,33 +63,31 @@ npm install
 npm run compile
 ```
 
-Open this folder in VS Code and press `F5` to launch an Extension Development
-Host. The extension activates after startup.
+Open the folder in VS Code and press `F5` to launch an Extension Development
+Host. Useful commands:
 
-## Install from GitHub
+- **Codex Usage: Show Panel**
+- **Codex Usage: Refresh**
+- **Codex Usage: Show Output**
 
-1. Download the latest `.vsix` file from the [Releases page](https://github.com/ITFinesse/VSCode-Codex-Tracker/releases).
-2. In VS Code, press `Ctrl+Shift+P` (Or right click .vsxi, install.)
-3. Choose **Extensions: Install from VSIX...**.
-4. Select the downloaded `.vsix` file and reload VS Code.
+Run the full verification suite with:
 
-## Settings
+```powershell
+npm run verify
+```
 
-- `codexUsage.sessionsPath`: use a different Codex session directory.
-- `codexUsage.codexPath`: optionally override the Codex executable path.
-- `codexUsage.refreshIntervalSeconds`: poll interval, default 60 seconds.
-- `codexUsage.historyLimit`: maximum prompts shown, default 100.
+## Links
 
-## Licence
+- [Repository: ITFinesse/VSCode-Codex-Tracker](https://github.com/ITFinesse/VSCode-Codex-Tracker)
+- [ITFinesse website](https://itfinesse.co.uk)
+- [ITFinesse Marketplace publisher](https://marketplace.visualstudio.com/manage/publishers/itfinesse)
 
-Copyright (c) 2026 Stephen Stern, ITFinesse.co.uk
+## License
 
-This project is licensed under the PolyForm Noncommercial License 1.0.0.
+Copyright (c) 2026 Stephen Stern, ITFinesse.co.uk.
 
-You may use, modify, fork, and redistribute this extension only for
-non-commercial purposes. You must retain this copyright notice and give
-clear credit to Stephen Stern ITFinesse.co.uk and this repository in redistributed or modified versions.
+This project is licensed under the
+[PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0/).
 
 Commercial use, resale, paid distribution, use in a paid product or service,
-and monetisation of this extension or derivative works require prior written
-permission from the copyright holder.
+and monetisation require prior written permission from the copyright holder.
