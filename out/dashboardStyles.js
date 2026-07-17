@@ -10,7 +10,7 @@ exports.dashboardStyles = String.raw `    :root{
       --border:var(--vscode-widget-border,#3b3b3b);
       --text:var(--vscode-foreground,#e8e8e8);
       --muted:var(--vscode-descriptionForeground,#a5a5a5);
-    }body[data-theme="light"]{--accent:#1769aa;--teal:#16856f;--purple:#7a43a8;--surface:#f5f7fb;--surface2:#e7edf5;--border:#b8c6d6;--text:#18212b;--muted:#526477}
+    }
     *{box-sizing:border-box}
     body{margin:0;padding:22px;background:var(--surface);color:var(--text);font:13px/1.45 var(--vscode-font-family,Segoe UI,sans-serif)}
     button,input,select{font:inherit}
@@ -90,7 +90,7 @@ exports.dashboardStyles = String.raw `    :root{
     .visibility{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin:12px 0}
     .visibility label{display:flex;align-items:center;gap:6px;margin:0;color:var(--muted)}
     .thresholds{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
-    .thresholds label{font-size:11px}.colour-settings{padding-top:10px;border-top:1px solid var(--border)}.theme-toggle{display:flex!important;align-items:center;gap:8px;margin:12px 0!important;cursor:pointer}.theme-toggle input{position:absolute;opacity:0;pointer-events:none}.theme-toggle span{position:relative;padding-left:44px;line-height:24px}.theme-toggle span::before{content:'';position:absolute;left:0;top:2px;width:34px;height:20px;border-radius:999px;background:var(--border);transition:background .15s ease}.theme-toggle span::after{content:'';position:absolute;left:3px;top:5px;width:14px;height:14px;border-radius:50%;background:var(--text);transition:transform .15s ease}.theme-toggle input:checked+span::before{background:var(--accent)}.theme-toggle input:checked+span::after{transform:translateX(14px)}.theme-toggle input:focus-visible+span::before{outline:2px solid var(--accent);outline-offset:2px}
+    .thresholds label{font-size:11px}.colour-settings{padding-top:10px;border-top:1px solid var(--border)}.debug-toggle{display:flex!important;align-items:center;gap:8px;margin:12px 0!important;cursor:pointer}
     .thresholds input[type=color]{width:100%;height:30px}
     .reset-layout{width:100%;padding:8px;margin-top:12px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--text);cursor:pointer}
     .save{width:100%;padding:8px;border:0;border-radius:4px;background:var(--vscode-button-background);color:var(--vscode-button-foreground);cursor:pointer}

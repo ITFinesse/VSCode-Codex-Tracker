@@ -27,16 +27,12 @@ exports.dashboardMarkup = String.raw `  <header class="topbar">
     <div class="build-meta"><span id="versionMeta">V:—</span><span id="buildTimeMeta">T:--:--</span></div>
     <form id="settingsForm">
       <div class="settings-filters">
-        <label>Refresh Interval
-          <select id="refreshIntervalSeconds">
-            <option value="10">10 seconds</option><option value="30">30 seconds</option><option value="60">1 minute</option><option value="300">5 minutes</option><option value="900">15 minutes</option><option value="1800">30 minutes</option><option value="3600">1 hour</option>
-          </select>
-        </label>
         <label>Default Filter
           <select id="defaultRangeDays"><option value="1">1D</option><option value="7">7D</option><option value="30">30D</option><option value="90">90D</option><option value="0">Custom / all history</option></select>
         </label>
       </div>
-      <label class="theme-toggle"><input id="themeMode" type="checkbox"><span>Light mode</span></label>
+      <label class="debug-toggle"><input id="outputDebug" type="checkbox"><span>Output Debug</span></label>
+      <button id="refreshModelPrices" type="button">Refresh model prices</button>
       <div class="visibility">
         <label><input id="showSpend" type="checkbox"> Spend chart</label><label><input id="showMetrics" type="checkbox"> Metric charts</label><label><input id="showModels" type="checkbox"> Model chart</label><label><input id="showTokens" type="checkbox"> Tokens chart</label><label><input id="showPrompts" type="checkbox"> Prompt usage</label>
       </div>

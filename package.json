@@ -88,14 +88,10 @@
           "maximum": 500,
           "description": "Maximum number of recent prompts to show."
         },
-        "codexUsage.theme": {
-          "type": "string",
-          "enum": [
-            "dark",
-            "light"
-          ],
-          "default": "dark",
-          "description": "Dashboard colour mode."
+        "codexUsage.outputDebug": {
+          "type": "boolean",
+          "default": false,
+          "description": "Log detailed app-server commands, responses, pricing, and cost calculations."
         },
         "codexUsage.warningThresholdPercent": {
           "type": "number",

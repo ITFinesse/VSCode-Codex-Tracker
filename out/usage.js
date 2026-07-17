@@ -46,6 +46,7 @@ function parseSessionText(text, session) {
     let sessionTitle;
     let currentPrompt;
     let currentModel;
+    let currentReasoningEffort;
     for (const line of text.split(/\r?\n/)) {
         if (!line)
             continue;
@@ -58,14 +59,17 @@ function parseSessionText(text, session) {
         }
         const timestamp = dateFrom(event.timestamp);
         const payload = object(event.payload);
-        if (event.type === "turn_context" && typeof payload?.model === "string")
-            currentModel = payload.model;
+        if (event.type === "turn_context") {
+            currentModel = typeof payload?.model === "string" ? payload.model : currentModel;
+            const reasoning = object(payload?.reasoning) ?? object(payload?.reasoning_effort);
+            currentReasoningEffort = typeof payload?.reasoning_effort === "string" ? payload.reasoning_effort : typeof payload?.reasoningEffort === "string" ? payload.reasoningEffort : typeof reasoning?.effort === "string" ? reasoning.effort : currentReasoningEffort;
+        }
         const message = object(payload?.type === "message" ? payload : undefined);
         if (message?.role === "user") {
             const prompt = messageText(message);
             if (prompt && timestamp && !isSessionMetadata(prompt)) {
                 sessionTitle ??= taskTitle(prompt);
-                currentPrompt = { timestamp, text: prompt, model: currentModel, session, sessionTitle };
+                currentPrompt = { timestamp, text: prompt, model: currentModel, reasoningEffort: currentReasoningEffort, session, sessionTitle };
                 prompts.push(currentPrompt);
             }
         }
@@ -190,7 +194,7 @@ function normalizeAppearanceSettings(value) {
         criticalColor: color(appearance.criticalColor, "#dc2626"),
         belowFullColor: color(appearance.belowFullColor, "#cccccc"),
         refreshIntervalSeconds: Math.max(10, Math.min(3600, number(appearance.refreshIntervalSeconds) ?? 60)),
-        theme: appearance.theme === "light" ? "light" : "dark"
+        outputDebug: appearance.outputDebug === true
     };
 }
 function aggregateChartData(prompts) {

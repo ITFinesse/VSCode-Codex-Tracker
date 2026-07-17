@@ -10,6 +10,7 @@ export interface PromptRecord {
   timestamp: Date;
   text: string;
   model?: string;
+  reasoningEffort?: string;
   session: string;
   sessionTitle?: string;
   inputTokens?: number;
@@ -30,7 +31,7 @@ export interface AppearanceSettings {
   criticalColor: string;
   belowFullColor: string;
   refreshIntervalSeconds: number;
-  theme: "dark" | "light";
+  outputDebug: boolean;
 }
 
 export interface ChartTotals {
@@ -90,7 +91,7 @@ export function parseSessionText(text: string, session: string): PromptRecord[] 
   const prompts: PromptRecord[] = [];
   let sessionTitle: string | undefined;
   let currentPrompt: PromptRecord | undefined;
-  let currentModel: string | undefined;
+  let currentModel: string | undefined; let currentReasoningEffort: string | undefined;
 
   for (const line of text.split(/\r?\n/)) {
     if (!line) continue;
@@ -102,13 +103,13 @@ export function parseSessionText(text: string, session: string): PromptRecord[] 
     }
     const timestamp = dateFrom(event.timestamp);
     const payload = object(event.payload);
-    if (event.type === "turn_context" && typeof payload?.model === "string") currentModel = payload.model;
+    if (event.type === "turn_context") { currentModel = typeof payload?.model === "string" ? payload.model : currentModel; const reasoning = object(payload?.reasoning) ?? object(payload?.reasoning_effort); currentReasoningEffort = typeof payload?.reasoning_effort === "string" ? payload.reasoning_effort : typeof payload?.reasoningEffort === "string" ? payload.reasoningEffort : typeof reasoning?.effort === "string" ? reasoning.effort : currentReasoningEffort; }
     const message = object(payload?.type === "message" ? payload : undefined);
     if (message?.role === "user") {
       const prompt = messageText(message);
       if (prompt && timestamp && !isSessionMetadata(prompt)) {
         sessionTitle ??= taskTitle(prompt);
-        currentPrompt = { timestamp, text: prompt, model: currentModel, session, sessionTitle };
+        currentPrompt = { timestamp, text: prompt, model: currentModel, reasoningEffort: currentReasoningEffort, session, sessionTitle };
         prompts.push(currentPrompt);
       }
     }
@@ -243,7 +244,7 @@ export function normalizeAppearanceSettings(value: unknown): AppearanceSettings 
     criticalColor: color(appearance.criticalColor, "#dc2626"),
     belowFullColor: color(appearance.belowFullColor, "#cccccc"),
     refreshIntervalSeconds: Math.max(10, Math.min(3600, number(appearance.refreshIntervalSeconds) ?? 60)),
-    theme: appearance.theme === "light" ? "light" : "dark"
+    outputDebug: appearance.outputDebug === true
   };
 }
 

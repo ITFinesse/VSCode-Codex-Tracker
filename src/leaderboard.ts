@@ -2,14 +2,17 @@ import { randomBytes } from "node:crypto";
 import * as vscode from "vscode";
 
 export interface LeaderboardSettings { enabled: boolean; name: string; code: string; position?: number; }
-interface InputLedger { total: number; promptCount: number; prompts: Record<string, number>; }
-interface PromptUsage { session: string; timestamp: Date; inputTokens?: number; }
+interface UsageLedger { total: number; estimatedSpend: number; promptCount: number; prompts: Record<string, { input: number; spend: number }>; }
+interface PromptUsage { session: string; timestamp: Date; inputTokens?: number; estimatedCost?: number; }
+export interface LeaderboardLogger { info(message: string): void; warn(message: string): void; }
 const CODE_KEY = "leaderboard.code";
 const DEVICE_KEY = "leaderboard.deviceId";
-const LEDGER_KEY = "leaderboard.inputLedger.v1";
+const LEDGER_KEY = "leaderboard.usageLedger.v2";
 const LAST_SENT_KEY = "leaderboard.lastSentTotal";
+const LAST_SENT_AT_KEY = "leaderboard.lastSentAt";
 const ANONYMOUS_NAME_KEY = "leaderboard.anonymousName";
 const LEADERBOARD_ENDPOINT = "https://vscodecodextracker.itfinesse.co.uk/api.php";
+const LEADERBOARD_MIN_SUBMIT_MS = 60_000;
 
 export async function readLeaderboardSettings(context: vscode.ExtensionContext): Promise<LeaderboardSettings> {
   const config = vscode.workspace.getConfiguration("codexUsage");
@@ -41,34 +44,39 @@ export async function checkLeaderboardName(context: vscode.ExtensionContext, val
   return { available: response.available === true, message: String(response.message ?? "Name check failed.") };
 }
 
-export async function submitLeaderboardUsage(context: vscode.ExtensionContext, prompts: PromptUsage[], log: vscode.LogOutputChannel): Promise<number | undefined> {
+export async function submitLeaderboardUsage(context: vscode.ExtensionContext, prompts: PromptUsage[], log: LeaderboardLogger): Promise<number | undefined> {
   const ledger = updateLedger(context, prompts);
   const settings = await readLeaderboardSettings(context);
-  if (!settings.enabled || ledger.total < 1_000 || (ledger.total <= context.globalState.get<number>(LAST_SENT_KEY, 0) && ledger.promptCount <= context.globalState.get<number>("leaderboard.lastSentPromptCount", 0))) return undefined;
+  const lastTotal = context.globalState.get<number>(LAST_SENT_KEY, 0);
+  const lastPromptCount = context.globalState.get<number>("leaderboard.lastSentPromptCount", 0);
+  const lastSentAt = context.globalState.get<number>(LAST_SENT_AT_KEY, 0);
+  if (!settings.enabled || ledger.total < 1_000 || (ledger.total <= lastTotal && ledger.promptCount <= lastPromptCount) || Date.now() - lastSentAt < LEADERBOARD_MIN_SUBMIT_MS) return undefined;
   let deviceId = context.globalState.get<string>(DEVICE_KEY);
   if (!deviceId) { deviceId = randomBytes(18).toString("base64url"); await context.globalState.update(DEVICE_KEY, deviceId); }
   try {
-    const response = await request(LEADERBOARD_ENDPOINT, { action: "submit", name: settings.name, code: settings.code, device_id: deviceId, input_tokens_total: ledger.total, prompt_count_total: ledger.promptCount });
+    const response = await request(LEADERBOARD_ENDPOINT, { action: "submit", name: settings.name, code: settings.code, device_id: deviceId, input_tokens_total: ledger.total, prompt_count_total: ledger.promptCount, estimated_spend_total: Number(ledger.estimatedSpend.toFixed(6)) });
     if (response.ok !== true) throw new Error(String(response.message ?? "Leaderboard rejected the submission."));
     const position = Number(response.position ?? response.rank);
     if (Number.isInteger(position) && position > 0) await context.globalState.update("leaderboard.position", position);
-    await context.globalState.update(LAST_SENT_KEY, ledger.total);
-    await context.globalState.update("leaderboard.lastSentPromptCount", ledger.promptCount);
-    log.info(`Leaderboard: submitted ${ledger.total.toLocaleString()} cumulative input tokens.`);
+    await Promise.all([context.globalState.update(LAST_SENT_KEY, ledger.total), context.globalState.update("leaderboard.lastSentPromptCount", ledger.promptCount), context.globalState.update(LAST_SENT_AT_KEY, Date.now())]);
+    log.info(`Leaderboard: submitted ${ledger.total.toLocaleString()} input tokens and $${ledger.estimatedSpend.toFixed(2)} estimated API-equivalent spend.`);
     return Number.isInteger(position) && position > 0 ? position : undefined;
   } catch (error) { log.warn(`Leaderboard: submission failed; it will retry after the next token increase. ${error instanceof Error ? error.message : String(error)}`); }
 }
 
-function updateLedger(context: vscode.ExtensionContext, prompts: PromptUsage[]): InputLedger {
-  const stored = context.globalState.get<InputLedger>(LEDGER_KEY);
-  const ledger: InputLedger = stored && isObject(stored.prompts) && Number.isFinite(stored.total) ? { ...stored, promptCount: Number.isFinite(stored.promptCount) ? stored.promptCount : Object.keys(stored.prompts).length } : { total: 0, promptCount: 0, prompts: {} };
+function updateLedger(context: vscode.ExtensionContext, prompts: PromptUsage[]): UsageLedger {
+  const stored = context.globalState.get<UsageLedger>(LEDGER_KEY);
+  const ledger: UsageLedger = stored && isObject(stored.prompts) && Number.isFinite(stored.total) ? { total: stored.total, estimatedSpend: Number.isFinite(stored.estimatedSpend) ? stored.estimatedSpend : 0, promptCount: Number.isFinite(stored.promptCount) ? stored.promptCount : Object.keys(stored.prompts).length, prompts: stored.prompts } : { total: 0, estimatedSpend: 0, promptCount: 0, prompts: {} };
   let changed = false;
   for (const prompt of prompts) {
-    const tokens = Math.max(0, Math.floor(prompt.inputTokens ?? 0));
+    const input = Math.max(0, Math.floor(prompt.inputTokens ?? 0));
+    const spend = Math.max(0, Number(prompt.estimatedCost ?? 0));
     const key = `${prompt.session}|${prompt.timestamp.getTime()}`;
-    const previous = Math.max(0, Math.floor(ledger.prompts[key] ?? 0));
+    const previous = ledger.prompts[key] ?? { input: 0, spend: 0 };
     if (!(key in ledger.prompts)) { ledger.promptCount += 1; changed = true; }
-    if (tokens > previous) { ledger.total += tokens - previous; ledger.prompts[key] = tokens; changed = true; }
+    if (input > previous.input) { ledger.total += input - previous.input; previous.input = input; changed = true; }
+    if (spend > previous.spend) { ledger.estimatedSpend += spend - previous.spend; previous.spend = spend; changed = true; }
+    ledger.prompts[key] = previous;
   }
   if (changed) void context.globalState.update(LEDGER_KEY, ledger);
   return ledger;

@@ -57,7 +57,7 @@ exports.dashboardClient = String.raw `    const vscode = acquireVsCodeApi();
 
     const charts = new Map();
     const canvas = (id, height, label) => '<div class="chart-wrap" style="height:' + height + 'px"><canvas id="' + id + '" role="img" aria-label="' + esc(label) + '"></canvas></div>';
-    const chartText = value => Math.abs(value) < 1 ? money(value, 2) : number(value);
+    const chartText = value => number(value);
     const chartTheme = () => ({ text: resolvedColor('--muted', '#a5a5a5'), grid: resolvedColor('--border', '#3b3b3b') });
     const destroyCharts = () => { charts.forEach(instance => instance.destroy()); charts.clear(); };
     const buildChart = (id, config) => {
@@ -284,7 +284,7 @@ exports.dashboardClient = String.raw `    const vscode = acquireVsCodeApi();
           ? '<section class="panel table-panel"><div class="table-head"><h2>Prompt Usage</h2><input id="search" class="search" type="search" placeholder="Search prompts…"><button class="sort ' + (sortMode === 'latest' ? 'active' : '') + '" data-sort="latest">Latest</button><button class="sort ' + (sortMode === 'agent' ? 'active' : '') + '" data-sort="agent">Agent</button><button class="sort ' + (sortMode === 'tokens' ? 'active' : '') + '" data-sort="tokens">Tokens ↓</button><label class="row-count">Rows <select id="rowCount"><option>4</option><option>10</option><option>25</option><option>100</option></select></label></div><div id="tableScroll" class="table-scroll"><table><thead><tr><th class="resizable" data-col="date">Date / Time</th><th class="resizable" data-col="task">Task</th><th class="resizable" data-col="prompt">Prompt</th><th class="resizable" data-col="agent">Agent</th><th class="resizable num">Input Tokens</th><th class="resizable num">Output Tokens</th><th class="resizable num">Cached Tokens</th><th class="resizable num">Cost</th></tr></thead><tbody>' + (rows || '<tr><td colspan="8" class="empty">No prompts in this range</td></tr>') + '</tbody></table></div></section>'
           : '');
       const noMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
-       if ($('spend-chart')) buildChart('spend-chart', { type: 'line', data: { labels: timeLabels(points), datasets: [lineDataset('Spend', points, 'cost', palette[0], true, 'y', false, 'money')] }, options: commonOptions('Spend over time', false, timeLabels(points)) });
+       if ($('spend-chart')) { const options = commonOptions('Spend over time', false, timeLabels(points)); options.scales.y.title.text = 'Spend (USD)'; options.scales.y.ticks.callback = value => money(value, 2); buildChart('spend-chart', { type: 'line', data: { labels: timeLabels(points), datasets: [lineDataset('Spend', points, 'cost', palette[0], true, 'y', false, 'money')] }, options }); }
       [['input', 'Input Tokens', palette[2]], ['output', 'Output Tokens', palette[1]], ['cached', 'Cached Tokens', palette[0]]].forEach(([key, label, color]) => {
         const id = 'metric-' + key;
          if ($(id)) buildChart(id, { type: 'line', data: { labels: timeLabels(points), datasets: [lineDataset(label, points, key, color, true, 'y', true)] }, options: commonOptions(label + ' trend', true, timeLabels(points)) });
@@ -393,6 +393,7 @@ exports.dashboardClient = String.raw `    const vscode = acquireVsCodeApi();
       vscode.setState(state);
       render();
     };
+    $('refreshModelPrices').onclick = () => { $('refreshModelPrices').disabled = true; $('refreshModelPrices').textContent = 'Refreshing prices…'; vscode.postMessage({ command: 'refreshModelPrices' }); };
     $('leaderboardButton').onclick = () => {
       const popup = $('leaderboardPopup');
       popup.hidden = false;
@@ -413,13 +414,12 @@ exports.dashboardClient = String.raw `    const vscode = acquireVsCodeApi();
       vscode.postMessage({
         command: 'saveAppearance',
         appearance: {
-          refreshIntervalSeconds: Number($('refreshIntervalSeconds').value),
           warningThreshold: Number($('warningThreshold').value),
           criticalThreshold: Number($('criticalThreshold').value),
           belowFullColor: $('belowFullColor').value,
           warningColor: $('warningColor').value,
           criticalColor: $('criticalColor').value,
-          theme: $('themeMode').checked ? 'light' : 'dark'
+          outputDebug: $('outputDebug').checked
         }
       });
       vscode.postMessage({ command: 'saveLeaderboard', leaderboard: { enabled: $('leaderboardEnabled').checked, name: $('leaderboardName').value, code: $('leaderboardCode').value } });
@@ -464,6 +464,7 @@ exports.dashboardClient = String.raw `    const vscode = acquireVsCodeApi();
         status.className = data.available ? 'leaderboard-status-ok' : 'leaderboard-status-error';
         return;
       }
+      if (data.type === 'pricesRefreshed') { $('refreshModelPrices').disabled = false; $('refreshModelPrices').textContent = data.success ? 'Model prices refreshed' : 'Refresh model prices'; return; }
       if (data.type !== 'snapshot') return;
       snapshot = data.snapshot;
       nextRefreshAt = snapshot.nextRefreshAt;
@@ -474,14 +475,13 @@ exports.dashboardClient = String.raw `    const vscode = acquireVsCodeApi();
         $('buildTimeMeta').textContent = metadata.buildTime;
       }
       const appearance = snapshot.appearance;
-      document.body.dataset.theme = appearance.theme;
       leaderboard = snapshot.leaderboard || leaderboard;
       $('leaderboardPosition').textContent = '🏆: ' + (leaderboard.position || '—');
       $('leaderboardEnabled').checked = leaderboard.enabled === true;
       $('leaderboardName').value = leaderboard.name || 'Anonymous';
       $('leaderboardCode').value = leaderboard.code || '';
-      $('themeMode').checked = appearance.theme === 'light';
-      ['warningThreshold', 'criticalThreshold', 'belowFullColor', 'warningColor', 'criticalColor', 'refreshIntervalSeconds'].forEach(key => $(key).value = appearance[key]);
+      $('outputDebug').checked = appearance.outputDebug === true;
+      ['warningThreshold', 'criticalThreshold', 'belowFullColor', 'warningColor', 'criticalColor'].forEach(key => $(key).value = appearance[key]);
       $('defaultRangeDays').value = String(rangeDays);
       ['showSpend', 'showMetrics', 'showModels', 'showTokens', 'showPrompts'].forEach(key => $(key).checked = visibility[key] !== false);
       render();

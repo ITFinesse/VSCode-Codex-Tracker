@@ -4,7 +4,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { spawn } from "node:child_process";
 import * as readline from "node:readline";
-import { randomBytes } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import * as https from "node:https";
 import * as vscode from "vscode";
 import { professionalPanelHtml } from "./dashboard";
 import { checkLeaderboardName, readLeaderboardSettings, saveLeaderboardSettings, submitLeaderboardUsage } from "./leaderboard";
@@ -22,6 +23,7 @@ interface PromptRecord {
   timestamp: Date;
   text: string;
   model?: string;
+  reasoningEffort?: string;
   session: string;
   sessionTitle?: string;
   inputTokens?: number;
@@ -57,12 +59,28 @@ let displayTimeZone: string | undefined;
 let extensionVersion = "V:—";
 let extensionBuildTime = "T:--:--";
 let leaderboardForWebview: { enabled: boolean; name: string; code: string } | undefined;
-const sessionFileCache = new Map<string, { size: number; modified: number; prompts: PromptRecord[] }>();
+const sessionFileCache = new Map<string, { size: number; modified: number; checkedAt: number; prompts: PromptRecord[] }>();
+let sessionFileListCache: { root: string; expiresAt: number; files: string[] } | undefined;
 let rateLimitsCache:
   { expiresAt: number; value: { fiveHour: LimitWindow; weekly: LimitWindow; account?: AccountSummary } | undefined } | undefined;
 let rateLimitsInFlight: Promise<{ fiveHour: LimitWindow; weekly: LimitWindow; account?: AccountSummary } | undefined> | undefined;
-const RATE_LIMIT_CACHE_MS = 15_000;
+const RATE_LIMIT_CACHE_MS = 60_000;
+const modelPricing = new Map<string, ModelPricing>();
+let modelPricingLoadInFlight: Promise<void> | undefined;
+let modelPricingLoaded = false;
+const loggedPricingWarnings = new Set<string>();
+type PricingSource = "openrouter" | "litellm" | "cache";
+interface ModelPricing { input: number; cachedInput: number; output: number; source: PricingSource; }
+interface ModelPricingCache { version: number; refreshedAt: number; rates: Record<string, Omit<ModelPricing, "source"> & Partial<Pick<ModelPricing, "source">>>; }
 const DIRECTORY_SCAN_CONCURRENCY = 8;
+const SESSION_DISCOVERY_CACHE_MS = 30_000;
+const SESSION_STAT_CACHE_MS = 30_000;
+const MODEL_PRICING_FILE = "model-prices.json";
+const MODEL_PRICING_REFRESH_MS = 12 * 60 * 60 * 1_000;
+const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
+const LITELLM_MODELS_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
+const USAGE_CACHE_FILE = "usage-cache.json";
+const USAGE_CACHE_SECRET = "usage-cache.hmac-key";
 
 export function activate(context: vscode.ExtensionContext): void {
   extensionVersion = `V:${String(context.extension.packageJSON.version ?? "—")}`;
@@ -79,8 +97,8 @@ export function activate(context: vscode.ExtensionContext): void {
   output = vscode.window.createOutputChannel("Codex Usage Monitor", { log: true });
   context.subscriptions.push(output);
   void readLeaderboardSettings(context).then((settings) => { leaderboardForWebview = settings; });
-  output.info("Extension activated.");
-  output.info(`Performance: activation completed in ${(performance.now() - activationStartedAt).toFixed(1)}ms.`);
+  debugLog("Extension activated.");
+  debugLog(`Performance: activation completed in ${(performance.now() - activationStartedAt).toFixed(1)}ms.`);
   // Right-aligned status items are ordered by priority; keep the 5H segment first.
   statusBarFiveHour = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 10_000);
   statusBarWeekly = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 9_999);
@@ -91,35 +109,37 @@ export function activate(context: vscode.ExtensionContext): void {
   let refreshInFlight = false;
   let refreshQueued = false;
   let initialRefreshScheduled = false;
-  const refresh = async (): Promise<void> => {
+  const refresh = async (changedFile?: string): Promise<void> => {
     if (refreshInFlight) {
       if (!refreshQueued) {
         refreshQueued = true;
-        output.info("Refresh requested while one is running; one follow-up refresh queued.");
+        debugLog("Refresh requested while one is running; one follow-up refresh queued.");
       }
       return;
     }
     refreshInFlight = true;
     {
       refreshQueued = false;
-      output.info("Refresh started.");
+      debugLog("Refresh started.");
       try {
-        const snapshot = await collectUsage();
+        await ensureModelPricing(context);
+        const snapshot = await collectUsage(changedFile);
         snapshotCache = snapshot;
-        nextRefreshAt = Date.now() + readAppearanceSettings().refreshIntervalSeconds * 1_000;
+        nextRefreshAt = 0;
         updateStatusBar(snapshot);
-        void submitLeaderboardUsage(context, snapshot.prompts, output).then(async (position) => { if (!position || !snapshotCache) return; leaderboardForWebview = await readLeaderboardSettings(context); postSnapshot(snapshotCache); });
+        await saveUsageCache(context, snapshot);
         if (webviewReady) {
           postSnapshot(snapshotCache);
         } else {
-          output.info("Webview not ready; cached snapshot will be sent after readiness confirmation.");
+          debugLog("Webview not ready; cached snapshot will be sent after readiness confirmation.");
         }
-        output.info(`Usage refreshed from ${snapshot.usageSource}.`);
+        void submitLeaderboardUsage(context, snapshot.prompts.map((prompt) => ({ ...prompt, estimatedCost: estimateCost(prompt) })), { info: debugLog, warn: debugWarn }).then(async (position) => { if (!position || !snapshotCache) return; leaderboardForWebview = await readLeaderboardSettings(context); postSnapshot(snapshotCache); });
+        debugLog(`Usage refreshed from ${snapshot.usageSource}.`);
       } catch (error) {
         const message = error instanceof Error ? error.message : "Could not read Codex usage";
-        output.error(`Refresh failed: ${message}`);
+        debugError(`Refresh failed: ${message}`);
         if (error instanceof Error && error.stack) {
-          output.error(error.stack);
+          debugError(error.stack);
         }
         statusBarFiveHour.text = "5H: N/A / Rst: -- |";
         statusBarWeekly.text = "Weekly: --% / Rst: --";
@@ -142,18 +162,18 @@ export function activate(context: vscode.ExtensionContext): void {
       return;
     }
     initialRefreshScheduled = true;
-    setTimeout(() => void refresh(), 2_000);
+    setTimeout(() => { if (!snapshotCache) void refresh(); }, 2_000);
   };
 
   const provider: vscode.WebviewViewProvider = {
     resolveWebviewView(view): void {
       panel = view;
       webviewReady = false;
-      output.info("Webview provider resolved.");
+      debugLog("Webview provider resolved.");
       view.webview.options = { enableScripts: true, localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, "resources")] };
       const chartScriptUri = view.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, "resources", "chart.umd.js")).toString();
       view.webview.html = professionalPanelHtml(chartScriptUri, view.webview.cspSource, randomBytes(16).toString("base64"));
-      output.info("Webview HTML assigned; scripts enabled.");
+      debugLog("Webview HTML assigned; scripts enabled.");
       view.onDidDispose(
         () => {
           if (panel === view) {
@@ -167,18 +187,19 @@ export function activate(context: vscode.ExtensionContext): void {
       view.webview.onDidReceiveMessage(
         (message: { command?: string; appearance?: unknown; leaderboard?: unknown; error?: unknown; locale?: string; timeZone?: string }) => {
           if (message.command === "ready") {
-            output.info("Webview: ready message received.");
+            debugLog("Webview: ready message received.");
             displayLocale = typeof message.locale === "string" && message.locale ? message.locale : displayLocale;
             displayTimeZone = typeof message.timeZone === "string" && message.timeZone ? message.timeZone : displayTimeZone;
             webviewReady = true;
             if (snapshotCache) {
               updateStatusBar(snapshotCache);
-              postSnapshot(snapshotCache);
+              void ensureModelPricing(context).then(() => { if (snapshotCache) postSnapshot(snapshotCache); });
             } else {
               scheduleInitialRefresh();
             }
           } else if (message.command === "saveAppearance") {
-            void saveAppearanceSettings(message.appearance).then(refresh, () => undefined);
+            void saveAppearanceSettings(message.appearance).then(() => refresh(), () => undefined);
+          } else if (message.command === "refreshModelPrices") { const cachePath = path.join(context.globalStorageUri.fsPath, MODEL_PRICING_FILE); debugLog("Pricing: manual model-price refresh requested."); void refreshModelPricing(context, cachePath).then((success) => view.webview.postMessage({ type: "pricesRefreshed", success }), (error) => { debugLog(`Pricing: manual refresh failed: ${error instanceof Error ? error.message : String(error)}`); view.webview.postMessage({ type: "pricesRefreshed", success: false }); });
           } else if (message.command === "saveLeaderboard") {
             void saveLeaderboardSettings(context, message.leaderboard)
               .then(() => readLeaderboardSettings(context))
@@ -190,14 +211,14 @@ export function activate(context: vscode.ExtensionContext): void {
               .catch((error) => view.webview.postMessage({ type: "leaderboardName", available: false, message: error instanceof Error ? error.message : String(error) }));
           } else if (message.command === "webviewError") {
             const error = String(message.error ?? "unknown error");
-            output.error(`Dashboard webview error: ${error}`);
+            debugError(`Dashboard webview error: ${error}`);
             view.webview.postMessage({ type: "error", message: `Dashboard script error: ${error}` });
           }
         },
         undefined,
         context.subscriptions
       );
-      output.info("Webview message listener registered.");
+      debugLog("Webview message listener registered.");
       scheduleInitialRefresh();
     }
   };
@@ -214,63 +235,108 @@ export function activate(context: vscode.ExtensionContext): void {
     })
   );
 
-  scheduleInitialRefresh();
-  let refreshTimer: NodeJS.Timeout | undefined;
-  const resetTimer = (): void => {
-    if (refreshTimer) {
-      clearTimeout(refreshTimer);
-    }
-    const seconds = vscode.workspace.getConfiguration("codexUsage").get<number>("refreshIntervalSeconds", 60);
-    const delay = Math.max(10, seconds) * 1_000;
-    nextRefreshAt = Date.now() + delay;
-    refreshTimer = setTimeout(async () => {
-      await refresh();
-      resetTimer();
-    }, delay);
+  let sessionWatcher: fsSync.FSWatcher | undefined;
+  let sessionChangeTimer: NodeJS.Timeout | undefined;
+  const watchSessions = (): void => {
+    sessionWatcher?.close();
+    const configuredPath = vscode.workspace.getConfiguration("codexUsage").get<string>("sessionsPath", "").trim();
+    const sessionPath = configuredPath || path.join(os.homedir(), ".codex", "sessions");
+    try {
+      sessionWatcher = fsSync.watch(sessionPath, { recursive: true }, (_eventType, filename) => {
+        const relative = filename as string;
+        if (!relative || !relative.endsWith(".jsonl")) return;
+        if (sessionChangeTimer) clearTimeout(sessionChangeTimer);
+        const changedFile = path.join(sessionPath, relative);
+        sessionChangeTimer = setTimeout(() => void refresh(changedFile), 5_000);
+      });
+      debugLog(`Watcher: listening for Codex session changes at ${sessionPath}.`);
+    } catch (error) { debugWarn(`Watcher: unavailable for ${sessionPath}: ${error instanceof Error ? error.message : String(error)}`); }
   };
-  resetTimer();
-  context.subscriptions.push({ dispose: () => refreshTimer && clearTimeout(refreshTimer) });
+  watchSessions();
+  context.subscriptions.push({ dispose: () => { if (sessionChangeTimer) clearTimeout(sessionChangeTimer); sessionWatcher?.close(); } });
+  void loadUsageCache(context).then((cached) => {
+    if (!cached) { scheduleInitialRefresh(); return; }
+    snapshotCache = cached;
+    updateStatusBar(cached);
+    void ensureModelPricing(context).then(() => { if (snapshotCache && webviewReady) postSnapshot(snapshotCache); });
+  });
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((event) => {
-      if (event.affectsConfiguration("codexUsage.refreshIntervalSeconds")) {
-        resetTimer();
-      }
-      if (event.affectsConfiguration("codexUsage")) {
-        void refresh();
-      }
+      if (event.affectsConfiguration("codexUsage.sessionsPath")) { watchSessions(); void refresh(); }
+      else if (event.affectsConfiguration("codexUsage")) { if (snapshotCache && webviewReady) postSnapshot(snapshotCache); }
     })
   );
 }
 
 export function deactivate(): void {}
+async function usageCacheKey(context: vscode.ExtensionContext): Promise<Buffer> {
+  let encoded = await context.secrets.get(USAGE_CACHE_SECRET);
+  if (!encoded) { encoded = randomBytes(32).toString("base64"); await context.secrets.store(USAGE_CACHE_SECRET, encoded); }
+  return Buffer.from(encoded, "base64");
+}
+async function saveUsageCache(context: vscode.ExtensionContext, snapshot: UsageSnapshot): Promise<void> {
+  const payload = JSON.stringify(snapshot);
+  const signature = createHmac("sha256", await usageCacheKey(context)).update(payload).digest("base64");
+  const target = path.join(context.globalStorageUri.fsPath, USAGE_CACHE_FILE);
+  await fs.mkdir(path.dirname(target), { recursive: true });
+  await fs.writeFile(target, JSON.stringify({ version: 1, payload, signature }), "utf8");
+  debugLog(`Cache: saved ${snapshot.prompts.length} dashboard prompt(s).`);
+}
+async function loadUsageCache(context: vscode.ExtensionContext): Promise<UsageSnapshot | undefined> {
+  try {
+    const target = path.join(context.globalStorageUri.fsPath, USAGE_CACHE_FILE);
+    const stored = object(JSON.parse(await fs.readFile(target, "utf8")));
+    const payload = typeof stored?.payload === "string" ? stored.payload : undefined;
+    const signature = typeof stored?.signature === "string" ? stored.signature : undefined;
+    if (!payload || !signature || stored?.version !== 1) throw new Error("invalid cache envelope");
+    const expected = createHmac("sha256", await usageCacheKey(context)).update(payload).digest();
+    const actual = Buffer.from(signature, "base64");
+    if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) throw new Error("cache signature mismatch");
+    const raw = object(JSON.parse(payload));
+    const prompts = Array.isArray(raw?.prompts) ? raw.prompts.map(object).filter((prompt): prompt is JsonObject => Boolean(prompt)).map((prompt) => ({ timestamp: dateFrom(prompt.timestamp) ?? new Date(0), text: typeof prompt.text === "string" ? prompt.text : "", model: typeof prompt.model === "string" ? prompt.model : undefined, reasoningEffort: typeof prompt.reasoningEffort === "string" ? prompt.reasoningEffort : undefined, session: typeof prompt.session === "string" ? prompt.session : "", sessionTitle: typeof prompt.sessionTitle === "string" ? prompt.sessionTitle : undefined, inputTokens: number(prompt.inputTokens), outputTokens: number(prompt.outputTokens), cachedTokens: number(prompt.cachedTokens) })) : [];
+    const scannedAt = dateFrom(raw?.scannedAt);
+    if (!scannedAt || !prompts.length) throw new Error("cache snapshot missing prompts");
+    const limit = (value: unknown): LimitWindow => { const item = object(value); return { remainingPercent: number(item?.remainingPercent), resetAt: dateFrom(item?.resetAt), windowDurationMins: number(item?.windowDurationMins) }; };
+    debugLog(`Cache: loaded ${prompts.length} dashboard prompt(s).`);
+    return { fiveHour: limit(raw?.fiveHour), weekly: limit(raw?.weekly), prompts, sessionPath: typeof raw?.sessionPath === "string" ? raw.sessionPath : "", usageSource: raw?.usageSource === "codex app-server" ? "codex app-server" : "unavailable", scannedAt, account: object(raw?.account) ? { plan: typeof object(raw?.account)?.plan === "string" ? object(raw?.account)?.plan as string : undefined, credits: typeof object(raw?.account)?.credits === "string" ? object(raw?.account)?.credits as string : undefined, renewalDate: dateFrom(object(raw?.account)?.renewalDate) } : undefined };
+  } catch (error) { debugWarn(`Cache: unavailable or rejected: ${error instanceof Error ? error.message : String(error)}`); return undefined; }
+}
 
-async function collectUsage(): Promise<UsageSnapshot> {
+async function collectUsage(changedFile?: string): Promise<UsageSnapshot> {
   const collectionStartedAt = performance.now();
-  output.info("Collect: reading configuration.");
+  debugLog("Collect: reading configuration.");
   const configuration = vscode.workspace.getConfiguration("codexUsage");
   const configuredPath = configuration.get<string>("sessionsPath", "").trim();
   const sessionPath = configuredPath || path.join(os.homedir(), ".codex", "sessions");
   const limit = configuration.get<number>("historyLimit", 100);
+  if (changedFile && snapshotCache && changedFile.endsWith(".jsonl")) {
+    const liveLimits = await readLiveRateLimits(true);
+    const session = path.basename(changedFile, ".jsonl");
+    const updatedPrompts = await readSession(changedFile, true);
+    const prompts = [...snapshotCache.prompts.filter((prompt) => prompt.session !== session), ...updatedPrompts].sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime()).slice(0, limit);
+    debugLog(`Collect: updated active session ${session}; ${updatedPrompts.length} prompt(s), no historical scan.`);
+    return { ...snapshotCache, fiveHour: liveLimits?.fiveHour ?? snapshotCache.fiveHour, weekly: liveLimits?.weekly ?? snapshotCache.weekly, account: liveLimits?.account ?? snapshotCache.account, usageSource: liveLimits ? "codex app-server" : snapshotCache.usageSource, prompts, scannedAt: new Date() };
+  }
   const liveLimitsPromise = readLiveRateLimits();
   const scanStartedAt = performance.now();
   const files = await newestJsonlFiles(sessionPath, limit).catch(() => []);
-  output.info(`Performance: session scan completed in ${(performance.now() - scanStartedAt).toFixed(1)}ms.`);
-  output.info(`Collect: found ${files.length} session file(s) at ${sessionPath}.`);
+  debugLog(`Performance: session scan completed in ${(performance.now() - scanStartedAt).toFixed(1)}ms.`);
+  debugLog(`Collect: found ${files.length} session file(s) at ${sessionPath}.`);
   const prompts: PromptRecord[] = [];
 
   const parseStartedAt = performance.now();
-  for (const file of files) {
+  for (const [index, file] of files.entries()) {
     try {
-      prompts.push(...(await readSession(file)));
+      prompts.push(...(await readSession(file, index < 5)));
     } catch (error) {
-      output.warn(`Collect: failed reading ${file}: ${String(error)}`);
+      debugWarn(`Collect: failed reading ${file}: ${String(error)}`);
     }
   }
-  output.info(`Performance: session parsing completed in ${(performance.now() - parseStartedAt).toFixed(1)}ms.`);
+  debugLog(`Performance: session parsing completed in ${(performance.now() - parseStartedAt).toFixed(1)}ms.`);
   const liveLimits = await liveLimitsPromise;
-  output.info(`Collect: live limits ${liveLimits ? "received" : "unavailable"}; ${prompts.length} prompt(s) parsed.`);
+  debugLog(`Collect: live limits ${liveLimits ? "received" : "unavailable"}; ${prompts.length} prompt(s) parsed.`);
   const usageSource = liveLimits ? "codex app-server" : "unavailable";
-  output.info(`Performance: collection completed in ${(performance.now() - collectionStartedAt).toFixed(1)}ms.`);
+  debugLog(`Performance: collection completed in ${(performance.now() - collectionStartedAt).toFixed(1)}ms.`);
   prompts.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
   return {
     fiveHour: liveLimits?.fiveHour ?? {},
@@ -283,8 +349,8 @@ async function collectUsage(): Promise<UsageSnapshot> {
   };
 }
 
-async function readLiveRateLimits(): Promise<{ fiveHour: LimitWindow; weekly: LimitWindow; account?: AccountSummary } | undefined> {
-  if (rateLimitsCache && rateLimitsCache.expiresAt > Date.now()) {
+async function readLiveRateLimits(force = false): Promise<{ fiveHour: LimitWindow; weekly: LimitWindow; account?: AccountSummary } | undefined> {
+  if (!force && rateLimitsCache && rateLimitsCache.expiresAt > Date.now()) {
     return rateLimitsCache.value;
   }
   if (rateLimitsInFlight) {
@@ -301,9 +367,9 @@ async function readLiveRateLimits(): Promise<{ fiveHour: LimitWindow; weekly: Li
 }
 
 async function requestLiveRateLimits(): Promise<{ fiveHour: LimitWindow; weekly: LimitWindow; account?: AccountSummary } | undefined> {
-  output.info("Limits: requesting Codex app-server rate limits.");
+  debugLog("Limits: requesting Codex app-server rate limits.");
   const result = await readAppServerResult().catch((error) => {
-    output.warn(`Limits: app-server request failed: ${String(error)}`);
+    debugLog(`Limits: app-server request failed: ${String(error)}`);
     return undefined;
   });
   return parseRateLimitResponse(result);
@@ -403,18 +469,131 @@ function toLimitWindow(value: JsonObject | undefined): LimitWindow | undefined {
   }
   return { remainingPercent: Math.max(0, Math.min(100, remainingPercent ?? 100 - (usedPercent ?? 0))), resetAt, windowDurationMins };
 }
+function fetchJson(url: string): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    https.get(url, { headers: { "User-Agent": "VSCode-Codex-Tracker" } }, (response) => {
+      if ((response.statusCode ?? 500) < 200 || (response.statusCode ?? 500) >= 300) {
+        response.resume(); reject(new Error(`HTTP ${response.statusCode ?? "unknown"} from ${url}`)); return;
+      }
+      let text = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => { text += chunk; });
+      response.on("end", () => { try { resolve(JSON.parse(text)); } catch { reject(new Error(`Invalid JSON from ${url}`)); } });
+    }).on("error", reject);
+  });
+}
+function modelKey(value: string): string { return value.includes("/") ? value.slice(value.lastIndexOf("/") + 1) : value; }
+async function accessibleModelKeys(): Promise<Set<string>> {
+  const result = object(await readAppServerResult("model/list", {}));
+  const models = Array.isArray(result?.models) ? result.models : Array.isArray(result?.data) ? result.data : [];
+  const ids = new Set<string>();
+  for (const item of models) {
+    const model = object(item); const id = typeof model?.id === "string" ? model.id : typeof model?.slug === "string" ? model.slug : typeof model?.name === "string" ? model.name : undefined;
+    if (id) ids.add(modelKey(id));
+  }
+  debugLog(`Pricing: Codex access filter contains ${ids.size} model(s).`);
+  return ids;
+}
+async function ensureModelPricing(context: vscode.ExtensionContext): Promise<void> {
+  if (modelPricingLoaded) return;
+  if (modelPricingLoadInFlight) return modelPricingLoadInFlight;
+  modelPricingLoadInFlight = (async () => {
+    const cachePath = path.join(context.globalStorageUri.fsPath, MODEL_PRICING_FILE);
+    let cached: ModelPricingCache | undefined;
+    try {
+      cached = JSON.parse(await fs.readFile(cachePath, "utf8")) as ModelPricingCache;
+      for (const [id, rate] of Object.entries(cached.rates ?? {})) modelPricing.set(id, { ...rate, source: rate.source === "openrouter" || rate.source === "litellm" ? rate.source : "cache" });
+      debugLog(`Pricing: loaded ${modelPricing.size} cached rate(s) from local model-prices.json; provider metadata=${cached.version >= 3 ? "preserved" : "unavailable (legacy cache)"}.`);
+    } catch (error) { debugLog(`Pricing: local model-prices.json unavailable: ${error instanceof Error ? error.message : String(error)}.`); }
+    try {
+      const accessible = await accessibleModelKeys();
+      for (const id of modelPricing.keys()) if (!accessible.has(modelKey(id))) modelPricing.delete(id);
+      debugLog(`Pricing: cache retained ${modelPricing.size} rate(s) for accessible models.`);
+    } catch (error) { debugWarn(`Pricing: access filter unavailable; retaining cached catalogue. ${error instanceof Error ? error.message : String(error)}`); }
+    modelPricingLoaded = true;
+    if (!cached || cached.version < 3 || cached.refreshedAt + MODEL_PRICING_REFRESH_MS <= Date.now()) void refreshModelPricing(context, cachePath);
+  })();
+  try { await modelPricingLoadInFlight; } finally { modelPricingLoadInFlight = undefined; }
+}
+async function refreshModelPricing(context: vscode.ExtensionContext, cachePath: string): Promise<boolean> {
+  const merged = new Map<string, ModelPricing>();
+  const cachedRates = new Map(modelPricing);
+  let openRouterOk = false;
+  let liteLlmOk = false;
+  try {
+    const root = object(await fetchJson(OPENROUTER_MODELS_URL));
+    for (const item of Array.isArray(root?.data) ? root.data : []) {
+      const model = object(item); const pricing = object(model?.pricing); const id = typeof model?.id === "string" ? model.id : undefined;
+      const input = typeof pricing?.prompt === "string" ? Number(pricing.prompt) * 1_000_000 : undefined;
+      const output = typeof pricing?.completion === "string" ? Number(pricing.completion) * 1_000_000 : undefined;
+      if (id?.startsWith("openai/") && input !== undefined && output !== undefined && Number.isFinite(input) && Number.isFinite(output)) merged.set(modelKey(id), { input, cachedInput: typeof pricing?.input_cache_read === "string" ? Number(pricing.input_cache_read) * 1_000_000 : input * .1, output, source: "openrouter" });
+    }
+    openRouterOk = true; debugLog(`Pricing: OpenRouter returned ${merged.size} usable OpenAI rate(s).`);
+  } catch (error) { debugWarn(`Pricing: OpenRouter unavailable: ${error instanceof Error ? error.message : String(error)}`); }
+  try {
+    const root = object(await fetchJson(LITELLM_MODELS_URL));
+    for (const [id, raw] of Object.entries(root ?? {})) {
+      if (id.includes("/") && !id.startsWith("openai/")) continue; if (merged.has(modelKey(id))) continue;
+      const model = object(raw); const input = number(model?.input_cost_per_token); const output = number(model?.output_cost_per_token);
+      if (input !== undefined && output !== undefined) merged.set(modelKey(id), { input: input * 1_000_000, cachedInput: (number(model?.cache_read_input_token_cost) ?? input * .1) * 1_000_000, output: output * 1_000_000, source: "litellm" });
+    }
+    liteLlmOk = true; debugLog(`Pricing: LiteLLM filled missing rates; combined catalogue=${merged.size}.`);
+  } catch (error) { debugWarn(`Pricing: LiteLLM unavailable: ${error instanceof Error ? error.message : String(error)}`); }
+  try {
+    const accessible = await accessibleModelKeys();
+    for (const id of merged.keys()) if (!accessible.has(modelKey(id))) merged.delete(id);
+    const fallbackModels: string[] = [];
+    for (const [id, pricing] of cachedRates) {
+      if (accessible.has(modelKey(id)) && !merged.has(id)) {
+        merged.set(id, { ...pricing, source: "cache" });
+        fallbackModels.push(id);
+      }
+    }
+    debugLog(`Pricing: retained ${merged.size} rate(s) for accessible models; local-cache fallback=${fallbackModels.length ? fallbackModels.join(",") : "none"}.`);
+  } catch (error) { debugWarn(`Pricing: access filter failed; live catalogue not saved. ${error instanceof Error ? error.message : String(error)}`); return false; }
+  if (!openRouterOk && !liteLlmOk) { debugWarn("Pricing: both live providers failed; continuing with the last local catalogue."); return false; }
+  if (!merged.size) { debugWarn("Pricing: live providers returned no complete rates for accessible models; continuing with the last local catalogue."); return false; }
+  await fs.mkdir(path.dirname(cachePath), { recursive: true });
+  await fs.writeFile(cachePath, JSON.stringify({ version: 3, refreshedAt: Date.now(), rates: Object.fromEntries(merged) }), "utf8");
+  const changed = JSON.stringify([...modelPricing]) !== JSON.stringify([...merged]);
+  modelPricing.clear(); merged.forEach((pricing, id) => modelPricing.set(id, pricing));
+  for (const [id, pricing] of modelPricing) debugLog(`Pricing: model=${id}; source=${pricing.source}; input=$${pricing.input}/1M; cached=$${pricing.cachedInput}/1M; output=$${pricing.output}/1M.`);
+  if (changed && snapshotCache && webviewReady) postSnapshot(snapshotCache);
+  debugLog(`Pricing: saved ${modelPricing.size} live rate(s) to local model-prices.json; changed=${changed}.`);
+  return changed;
+}
+function pricingValue(model: JsonObject | undefined, keys: string[]): number | undefined {
+  if (!model) return undefined;
+  for (const key of keys) { const value = number(model[key]); if (value !== undefined) return value < .01 ? value * 1_000_000 : value; }
+  return undefined;
+}
+function debugLog(message: string): void { debugOutput("INFO", message); }
+function debugWarn(message: string): void { debugOutput("WARN", message); }
+function debugError(message: string): void { debugOutput("ERROR", message); }
+function debugOutput(level: "INFO" | "WARN" | "ERROR", message: string): void {
+  if (readAppearanceSettings().outputDebug) output.appendLine(`[${level}] ${message}`);
+}
+function appServerResponseSummary(method: string, result: unknown): string {
+  if (method !== "account/rateLimits/read") return `App-server ${method}: response received.`;
+  const limits = object(object(result)?.rateLimits);
+  const primary = object(limits?.primary);
+  const secondary = object(limits?.secondary);
+  const plan = typeof limits?.planType === "string" ? limits.planType : "unknown";
+  const describe = (window: JsonObject | undefined): string => window ? `${number(window.usedPercent) ?? "?"}% used / ${number(window.windowDurationMins) ?? "?"} min` : "not supplied";
+  return `App-server limits: plan=${plan}; primary=${describe(primary)}; secondary=${describe(secondary)}.`;
+}
 
-async function readAppServerResult(): Promise<unknown> {
+async function readAppServerResult(method = "account/rateLimits/read", params: JsonObject | null = null): Promise<unknown> {
   const requestStartedAt = performance.now();
   const command = await resolveCodexCommand();
-  output.info(`App-server: starting ${command}.`);
+  debugLog(`App-server: starting ${command}.`);
   return new Promise((resolve, reject) => {
     const child = spawn(command, ["app-server", "--listen", "stdio://"], {
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true
     });
-    child.stderr.on("data", (chunk) => output.warn(`App-server stderr: ${String(chunk).trim()}`));
-    output.info("App-server: process started.");
+    child.stderr.on("data", (chunk) => debugWarn(`App-server stderr: ${String(chunk).trim()}`));
+    debugLog("App-server: process started.");
     const lines = readline.createInterface({ input: child.stdout });
     let settled = false;
     const finish = (callback: () => void): void => {
@@ -428,7 +607,7 @@ async function readAppServerResult(): Promise<unknown> {
       callback();
     };
     const timeout = setTimeout(
-      () => finish(() => reject(new Error("Codex app-server rate-limit request timed out after 8 seconds"))),
+      () => finish(() => reject(new Error(`Codex app-server ${method} request timed out after 8 seconds`))),
       8_000
     );
     child.on("error", (error) => finish(() => reject(error)));
@@ -445,7 +624,8 @@ async function readAppServerResult(): Promise<unknown> {
           return;
         }
         finish(() => {
-          output.info(`Performance: app-server response completed in ${(performance.now() - requestStartedAt).toFixed(1)}ms.`);
+          debugLog(appServerResponseSummary(method, message.result));
+          debugLog(`Performance: app-server response completed in ${(performance.now() - requestStartedAt).toFixed(1)}ms.`);
           resolve(message.result);
         });
       } catch {
@@ -453,7 +633,7 @@ async function readAppServerResult(): Promise<unknown> {
       }
     });
     const send = (payload: JsonObject): void => {
-      child.stdin.write(`${JSON.stringify(payload)}\n`);
+      const methodName = typeof payload.method === "string" ? payload.method : "unknown"; debugLog(`App-server request: ${methodName}.`); child.stdin.write(`${JSON.stringify(payload)}\n`);
     };
     send({
       jsonrpc: "2.0",
@@ -462,7 +642,7 @@ async function readAppServerResult(): Promise<unknown> {
       params: { clientInfo: { name: "VSCode Codex Tracker", version: "0.0.1" }, capabilities: { experimentalApi: true } }
     });
     send({ jsonrpc: "2.0", method: "initialized", params: {} });
-    send({ jsonrpc: "2.0", id: 2, method: "account/rateLimits/read", params: null });
+    send({ jsonrpc: "2.0", id: 2, method, params });
   });
 }
 
@@ -488,6 +668,7 @@ async function resolveCodexCommand(): Promise<string> {
 }
 
 async function newestJsonlFiles(root: string, limit: number): Promise<string[]> {
+  if (sessionFileListCache?.root === root && sessionFileListCache.expiresAt > Date.now()) return sessionFileListCache.files;
   const candidates: Array<{ file: string; modified: number }> = [];
   const directories = [root];
   const visit = async (): Promise<void> => {
@@ -507,20 +688,21 @@ async function newestJsonlFiles(root: string, limit: number): Promise<string[]> 
     }
   };
   await Promise.all(Array.from({ length: DIRECTORY_SCAN_CONCURRENCY }, visit));
-  return candidates
-    .sort((a, b) => b.modified - a.modified)
-    .slice(0, limit)
-    .map((candidate) => candidate.file);
+  const files = candidates.sort((a, b) => b.modified - a.modified).slice(0, limit).map((candidate) => candidate.file);
+  sessionFileListCache = { root, files, expiresAt: Date.now() + SESSION_DISCOVERY_CACHE_MS };
+  return files;
 }
 
-async function readSession(file: string): Promise<PromptRecord[]> {
-  const stat = await fs.stat(file);
+async function readSession(file: string, forceCheck = false): Promise<PromptRecord[]> {
   const cached = sessionFileCache.get(file);
+  if (cached && !forceCheck && cached.checkedAt + SESSION_STAT_CACHE_MS > Date.now()) return cached.prompts;
+  const stat = await fs.stat(file);
   if (cached && cached.size === stat.size && cached.modified === stat.mtimeMs) {
+    cached.checkedAt = Date.now();
     return cached.prompts;
   }
   const prompts = parseSessionText(await fs.readFile(file, "utf8"), path.basename(file, ".jsonl"));
-  sessionFileCache.set(file, { size: stat.size, modified: stat.mtimeMs, prompts });
+  sessionFileCache.set(file, { size: stat.size, modified: stat.mtimeMs, checkedAt: Date.now(), prompts });
   return prompts;
 }
 
@@ -566,9 +748,26 @@ function dateFrom(value: unknown): Date | undefined {
         : undefined;
   return date && !Number.isNaN(date.getTime()) ? date : undefined;
 }
+function calculateApiEquivalentCost(usage: { model: string; inputTokens: number; cachedInputTokens: number; outputTokens: number }): number {
+  const prices = modelPricing.get(usage.model) ?? modelPricing.get(modelKey(usage.model));
+  if (!prices) throw new Error(`No pricing configured for: ${usage.model}`);
+  if (usage.inputTokens < 0 || usage.cachedInputTokens < 0 || usage.outputTokens < 0) throw new Error("Token counts cannot be negative");
+  if (usage.cachedInputTokens > usage.inputTokens) throw new Error("cachedInputTokens cannot exceed inputTokens");
+  const uncachedInputTokens = usage.inputTokens - usage.cachedInputTokens;
+  return (uncachedInputTokens / 1_000_000) * prices.input + (usage.cachedInputTokens / 1_000_000) * prices.cachedInput + (usage.outputTokens / 1_000_000) * prices.output;
+}
 function estimateCost(prompt: PromptRecord): number {
-  // Conservative, model-agnostic estimate shown as an estimate in the dashboard.
-  return ((prompt.inputTokens ?? 0) * 1.25 + (prompt.cachedTokens ?? 0) * 0.125 + (prompt.outputTokens ?? 0) * 10) / 1_000_000;
+  const inputTokens = prompt.inputTokens ?? 0;
+  const cachedInputTokens = prompt.cachedTokens ?? 0;
+  const outputTokens = prompt.outputTokens ?? 0;
+  const model = prompt.model ?? "unknown";
+  try {
+    return calculateApiEquivalentCost({ model: prompt.model ?? "", inputTokens, cachedInputTokens, outputTokens });
+  } catch (error) {
+    const warning = `Pricing: model=${model}; status=missing-after-cache-and-live-sources; reason=${error instanceof Error ? error.message : String(error)}; catalogueRates=${modelPricing.size}; action=cost unavailable.`;
+    if (!loggedPricingWarnings.has(warning)) { loggedPricingWarnings.add(warning); debugWarn(warning); }
+    return 0;
+  }
 }
 
 function updateStatusBar(snapshot: UsageSnapshot): void {
@@ -587,10 +786,10 @@ function updateStatusBar(snapshot: UsageSnapshot): void {
 function postSnapshot(snapshot: UsageSnapshot): void {
   const renderStartedAt = performance.now();
   if (!panel || !webviewReady) {
-    output.warn("Webview: snapshot not sent because panel is unavailable.");
+    debugLog("Webview: snapshot skipped because panel is unavailable.");
     return;
   }
-  output.info(`Webview: sending snapshot with ${snapshot.prompts.length} prompt(s).`);
+  debugLog(`Webview: sending snapshot with ${snapshot.prompts.length} prompt(s).`);
   void panel.webview
     .postMessage({
       type: "snapshot",
@@ -637,10 +836,10 @@ function postSnapshot(snapshot: UsageSnapshot): void {
     })
     .then(
       (delivered) =>
-        output.info(
+        debugLog(
           `Webview: snapshot delivery ${delivered ? "accepted" : "rejected"}; render handoff ${(performance.now() - renderStartedAt).toFixed(1)}ms.`
         ),
-      (error) => output.error(`Webview: snapshot delivery failed: ${String(error)}`)
+      (error) => debugLog(`Webview: snapshot delivery failed: ${String(error)}`)
     );
 }
 
@@ -692,7 +891,7 @@ interface AppearanceSettings {
   criticalColor: string;
   belowFullColor: string;
   refreshIntervalSeconds: number;
-  theme: "dark" | "light";
+  outputDebug: boolean;
 }
 
 function readAppearanceSettings(): AppearanceSettings {
@@ -706,7 +905,7 @@ function readAppearanceSettings(): AppearanceSettings {
     criticalColor: validColor(configuration.get<string>("criticalColor", "#dc2626"), "#dc2626"),
     belowFullColor: validColor(configuration.get<string>("belowFullColor", "#cccccc"), "#cccccc"),
     refreshIntervalSeconds: Math.max(10, Math.min(3600, configuration.get<number>("refreshIntervalSeconds", 60))),
-    theme: configuration.get<"dark" | "light">("theme", "dark") === "light" ? "light" : "dark"
+    outputDebug: configuration.get<boolean>("outputDebug", false)
   };
 }
 
@@ -743,7 +942,7 @@ async function saveAppearanceSettings(value: unknown): Promise<void> {
     configuration.update("criticalColor", appearance.criticalColor, vscode.ConfigurationTarget.Global),
     configuration.update("belowFullColor", appearance.belowFullColor, vscode.ConfigurationTarget.Global),
     configuration.update("refreshIntervalSeconds", appearance.refreshIntervalSeconds, vscode.ConfigurationTarget.Global),
-    configuration.update("theme", appearance.theme, vscode.ConfigurationTarget.Global)
+    configuration.update("outputDebug", appearance.outputDebug, vscode.ConfigurationTarget.Global)
   ]);
 }
 function enhancedPanelHtml(): string {
