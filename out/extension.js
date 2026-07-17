@@ -651,7 +651,8 @@ function readAppearanceSettings() {
         warningColor: validColor(configuration.get("warningColor", "#d97706"), "#d97706"),
         criticalColor: validColor(configuration.get("criticalColor", "#dc2626"), "#dc2626"),
         belowFullColor: validColor(configuration.get("belowFullColor", "#cccccc"), "#cccccc"),
-        refreshIntervalSeconds: Math.max(10, Math.min(3600, configuration.get("refreshIntervalSeconds", 60)))
+        refreshIntervalSeconds: Math.max(10, Math.min(3600, configuration.get("refreshIntervalSeconds", 60))),
+        theme: configuration.get("theme", "dark") === "light" ? "light" : "dark"
     };
 }
 function statusColor(window, appearance) {
@@ -685,7 +686,8 @@ async function saveAppearanceSettings(value) {
         configuration.update("warningColor", appearance.warningColor, vscode.ConfigurationTarget.Global),
         configuration.update("criticalColor", appearance.criticalColor, vscode.ConfigurationTarget.Global),
         configuration.update("belowFullColor", appearance.belowFullColor, vscode.ConfigurationTarget.Global),
-        configuration.update("refreshIntervalSeconds", appearance.refreshIntervalSeconds, vscode.ConfigurationTarget.Global)
+        configuration.update("refreshIntervalSeconds", appearance.refreshIntervalSeconds, vscode.ConfigurationTarget.Global),
+        configuration.update("theme", appearance.theme, vscode.ConfigurationTarget.Global)
     ]);
 }
 function enhancedPanelHtml() {

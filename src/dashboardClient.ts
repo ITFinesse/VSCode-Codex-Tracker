@@ -413,7 +413,8 @@ export const dashboardClient = String.raw`    const vscode = acquireVsCodeApi();
           criticalThreshold: Number($('criticalThreshold').value),
           belowFullColor: $('belowFullColor').value,
           warningColor: $('warningColor').value,
-          criticalColor: $('criticalColor').value
+          criticalColor: $('criticalColor').value,
+          theme: $('themeMode').value
         }
       });
       vscode.postMessage({ command: 'saveLeaderboard', leaderboard: { enabled: $('leaderboardEnabled').checked, name: $('leaderboardName').value, code: $('leaderboardCode').value } });
@@ -468,11 +469,12 @@ export const dashboardClient = String.raw`    const vscode = acquireVsCodeApi();
         $('buildTimeMeta').textContent = metadata.buildTime;
       }
       const appearance = snapshot.appearance;
+      document.body.dataset.theme = appearance.theme;
       leaderboard = snapshot.leaderboard || leaderboard;
       $('leaderboardEnabled').checked = leaderboard.enabled === true;
       $('leaderboardName').value = leaderboard.name || 'Anonymous';
       $('leaderboardCode').value = leaderboard.code || '';
-      ['refreshIntervalSeconds', 'warningThreshold', 'criticalThreshold', 'belowFullColor', 'warningColor', 'criticalColor'].forEach(key => $(key).value = appearance[key]);
+      ['refreshIntervalSeconds', 'warningThreshold', 'criticalThreshold', 'belowFullColor', 'warningColor', 'criticalColor', 'themeMode'].forEach(key => $(key).value = appearance[key]);
       $('defaultRangeDays').value = String(rangeDays);
       ['showSpend', 'showMetrics', 'showModels', 'showTokens', 'showPrompts'].forEach(key => $(key).checked = visibility[key] !== false);
       render();

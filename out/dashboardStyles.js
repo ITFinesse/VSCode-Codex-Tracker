@@ -10,7 +10,7 @@ exports.dashboardStyles = String.raw `    :root{
       --border:var(--vscode-widget-border,#3b3b3b);
       --text:var(--vscode-foreground,#e8e8e8);
       --muted:var(--vscode-descriptionForeground,#a5a5a5);
-    }
+    }body[data-theme="light"]{--accent:#1769aa;--teal:#16856f;--purple:#7a43a8;--surface:#f5f7fb;--surface2:#e7edf5;--border:#b8c6d6;--text:#18212b;--muted:#526477}
     *{box-sizing:border-box}
     body{margin:0;padding:22px;background:var(--surface);color:var(--text);font:13px/1.45 var(--vscode-font-family,Segoe UI,sans-serif)}
     button,input,select{font:inherit}

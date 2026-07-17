@@ -43,6 +43,9 @@ export const dashboardMarkup = String.raw`  <header class="topbar">
           <option value="3600">1 hour</option>
         </select>
       </label>
+      <label>Theme
+        <select id="themeMode"><option value="dark">Dark</option><option value="light">Light</option></select>
+      </label>
       <div class="visibility">
         <label><input id="showSpend" type="checkbox"> Spend chart</label>
         <label><input id="showMetrics" type="checkbox"> Metric charts</label>
@@ -60,7 +63,7 @@ export const dashboardMarkup = String.raw`  <header class="topbar">
         <label>Critical %<input id="criticalThreshold" type="number" min="0" max="100"></label>
       </div>
       <fieldset class="leaderboard-settings">
-        <legend>Leaderboard: vscodecodextracker.itfinesse.co.uk</legend>
+        <legend>Leaderboard: <a href="https://vscodecodextracker.itfinesse.co.uk" target="_blank" rel="noopener noreferrer">View: vscodecodextracker.itfinesse.co.uk</a></legend>
         <label class="participate-toggle"><input id="leaderboardEnabled" type="checkbox"><span>Participate</span></label>
         <label>Public name<input id="leaderboardName" type="text" maxlength="32" value="Anonymous" autocomplete="off"></label>
         <button id="checkLeaderboardName" type="button">Check name</button><span id="leaderboardNameStatus" role="status"></span>

@@ -692,6 +692,7 @@ interface AppearanceSettings {
   criticalColor: string;
   belowFullColor: string;
   refreshIntervalSeconds: number;
+  theme: "dark" | "light";
 }
 
 function readAppearanceSettings(): AppearanceSettings {
@@ -704,7 +705,8 @@ function readAppearanceSettings(): AppearanceSettings {
     warningColor: validColor(configuration.get<string>("warningColor", "#d97706"), "#d97706"),
     criticalColor: validColor(configuration.get<string>("criticalColor", "#dc2626"), "#dc2626"),
     belowFullColor: validColor(configuration.get<string>("belowFullColor", "#cccccc"), "#cccccc"),
-    refreshIntervalSeconds: Math.max(10, Math.min(3600, configuration.get<number>("refreshIntervalSeconds", 60)))
+    refreshIntervalSeconds: Math.max(10, Math.min(3600, configuration.get<number>("refreshIntervalSeconds", 60))),
+    theme: configuration.get<"dark" | "light">("theme", "dark") === "light" ? "light" : "dark"
   };
 }
 
@@ -740,7 +742,8 @@ async function saveAppearanceSettings(value: unknown): Promise<void> {
     configuration.update("warningColor", appearance.warningColor, vscode.ConfigurationTarget.Global),
     configuration.update("criticalColor", appearance.criticalColor, vscode.ConfigurationTarget.Global),
     configuration.update("belowFullColor", appearance.belowFullColor, vscode.ConfigurationTarget.Global),
-    configuration.update("refreshIntervalSeconds", appearance.refreshIntervalSeconds, vscode.ConfigurationTarget.Global)
+    configuration.update("refreshIntervalSeconds", appearance.refreshIntervalSeconds, vscode.ConfigurationTarget.Global),
+    configuration.update("theme", appearance.theme, vscode.ConfigurationTarget.Global)
   ]);
 }
 function enhancedPanelHtml(): string {
