@@ -17,7 +17,7 @@ exports.dashboardStyles = String.raw `    :root{
     .topbar{display:flex;align-items:center;gap:24px;margin:0 2px 18px}
     .title{font-size:26px;font-weight:700}
     .ranges,.top-actions,.quota-strip,.table-head{display:flex;align-items:center;gap:8px}
-    .range,.sort{border:0;background:transparent;color:var(--muted);padding:7px 10px;border-radius:4px;cursor:pointer}
+    .range,.sort{border:0;background:transparent;color:var(--muted);padding:7px 10px;border-radius:4px;cursor:pointer}.leaderboard-position{color:var(--accent);font-size:11px;font-weight:700;white-space:nowrap}
     .range.active,.sort.active{color:var(--accent);background:var(--vscode-toolbar-hoverBackground,#2b2b2b);box-shadow:inset 0 0 0 1px var(--border)}
     .quota-strip{justify-content:center;flex:1;white-space:nowrap}
     .quota-bars{display:flex;align-items:flex-end;gap:7px;height:42px;margin:0 10px}
@@ -86,11 +86,11 @@ exports.dashboardStyles = String.raw `    :root{
     .settings{position:fixed;z-index:100;right:22px;top:auto;bottom:auto;width:520px;max-width:calc(100vw - 28px);max-height:calc(100vh - 28px);overflow:auto;padding:16px;border:1px solid var(--border);border-radius:7px;background:var(--vscode-editorWidget-background,#252526);box-shadow:0 12px 36px #0006}
     .settings[hidden],.hidden{display:none}
     .settings h2{font-size:15px;font-weight:700;margin:0 0 15px}
-    .settings label{display:grid;gap:6px;margin:11px 0}
+    .settings label{display:grid;gap:6px;margin:11px 0}.settings select{padding:4px 6px;font-size:11px;min-height:28px}.settings-filters{display:flex;gap:10px;align-items:end}.settings-filters label{flex:1;margin:0}.settings-filters select{width:100%}
     .visibility{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin:12px 0}
     .visibility label{display:flex;align-items:center;gap:6px;margin:0;color:var(--muted)}
     .thresholds{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
-    .thresholds label{font-size:11px}
+    .thresholds label{font-size:11px}.colour-settings{padding-top:10px;border-top:1px solid var(--border)}.theme-toggle{display:flex!important;align-items:center;gap:8px;margin:12px 0!important;cursor:pointer}.theme-toggle input{position:absolute;opacity:0;pointer-events:none}.theme-toggle span{position:relative;padding-left:44px;line-height:24px}.theme-toggle span::before{content:'';position:absolute;left:0;top:2px;width:34px;height:20px;border-radius:999px;background:var(--border);transition:background .15s ease}.theme-toggle span::after{content:'';position:absolute;left:3px;top:5px;width:14px;height:14px;border-radius:50%;background:var(--text);transition:transform .15s ease}.theme-toggle input:checked+span::before{background:var(--accent)}.theme-toggle input:checked+span::after{transform:translateX(14px)}.theme-toggle input:focus-visible+span::before{outline:2px solid var(--accent);outline-offset:2px}
     .thresholds input[type=color]{width:100%;height:30px}
     .reset-layout{width:100%;padding:8px;margin-top:12px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--text);cursor:pointer}
     .save{width:100%;padding:8px;border:0;border-radius:4px;background:var(--vscode-button-background);color:var(--vscode-button-foreground);cursor:pointer}

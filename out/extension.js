@@ -107,7 +107,8 @@ function activate(context) {
                 snapshotCache = snapshot;
                 nextRefreshAt = Date.now() + readAppearanceSettings().refreshIntervalSeconds * 1_000;
                 updateStatusBar(snapshot);
-                void (0, leaderboard_1.submitLeaderboardUsage)(context, snapshot.prompts, output);
+                void (0, leaderboard_1.submitLeaderboardUsage)(context, snapshot.prompts, output).then(async (position) => { if (!position || !snapshotCache)
+                    return; leaderboardForWebview = await (0, leaderboard_1.readLeaderboardSettings)(context); postSnapshot(snapshotCache); });
                 if (webviewReady) {
                     postSnapshot(snapshotCache);
                 }

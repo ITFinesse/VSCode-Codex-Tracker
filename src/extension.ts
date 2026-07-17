@@ -108,7 +108,7 @@ export function activate(context: vscode.ExtensionContext): void {
         snapshotCache = snapshot;
         nextRefreshAt = Date.now() + readAppearanceSettings().refreshIntervalSeconds * 1_000;
         updateStatusBar(snapshot);
-        void submitLeaderboardUsage(context, snapshot.prompts, output);
+        void submitLeaderboardUsage(context, snapshot.prompts, output).then(async (position) => { if (!position || !snapshotCache) return; leaderboardForWebview = await readLeaderboardSettings(context); postSnapshot(snapshotCache); });
         if (webviewReady) {
           postSnapshot(snapshotCache);
         } else {

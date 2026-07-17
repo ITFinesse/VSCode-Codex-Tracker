@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import * as vscode from "vscode";
 
-export interface LeaderboardSettings { enabled: boolean; name: string; code: string; }
+export interface LeaderboardSettings { enabled: boolean; name: string; code: string; position?: number; }
 interface InputLedger { total: number; promptCount: number; prompts: Record<string, number>; }
 interface PromptUsage { session: string; timestamp: Date; inputTokens?: number; }
 const CODE_KEY = "leaderboard.code";
@@ -17,7 +17,7 @@ export async function readLeaderboardSettings(context: vscode.ExtensionContext):
   if (!code) { code = randomBytes(24).toString("base64url"); await context.secrets.store(CODE_KEY, code); }
   const configuredName = config.get<string>("leaderboardName", "");
   const name = configuredName.trim() && configuredName.trim() !== "Anonymous" ? normalizeName(configuredName) : await anonymousName(context);
-  return { enabled: config.get<boolean>("leaderboardEnabled", true), name, code };
+  return { enabled: config.get<boolean>("leaderboardEnabled", true), name, code, position: context.globalState.get<number>("leaderboard.position") };
 }
 
 export async function saveLeaderboardSettings(context: vscode.ExtensionContext, value: unknown): Promise<void> {
@@ -41,18 +41,21 @@ export async function checkLeaderboardName(context: vscode.ExtensionContext, val
   return { available: response.available === true, message: String(response.message ?? "Name check failed.") };
 }
 
-export async function submitLeaderboardUsage(context: vscode.ExtensionContext, prompts: PromptUsage[], log: vscode.LogOutputChannel): Promise<void> {
+export async function submitLeaderboardUsage(context: vscode.ExtensionContext, prompts: PromptUsage[], log: vscode.LogOutputChannel): Promise<number | undefined> {
   const ledger = updateLedger(context, prompts);
   const settings = await readLeaderboardSettings(context);
-  if (!settings.enabled || ledger.total < 1_000 || (ledger.total <= context.globalState.get<number>(LAST_SENT_KEY, 0) && ledger.promptCount <= context.globalState.get<number>("leaderboard.lastSentPromptCount", 0))) return;
+  if (!settings.enabled || ledger.total < 1_000 || (ledger.total <= context.globalState.get<number>(LAST_SENT_KEY, 0) && ledger.promptCount <= context.globalState.get<number>("leaderboard.lastSentPromptCount", 0))) return undefined;
   let deviceId = context.globalState.get<string>(DEVICE_KEY);
   if (!deviceId) { deviceId = randomBytes(18).toString("base64url"); await context.globalState.update(DEVICE_KEY, deviceId); }
   try {
     const response = await request(LEADERBOARD_ENDPOINT, { action: "submit", name: settings.name, code: settings.code, device_id: deviceId, input_tokens_total: ledger.total, prompt_count_total: ledger.promptCount });
     if (response.ok !== true) throw new Error(String(response.message ?? "Leaderboard rejected the submission."));
+    const position = Number(response.position ?? response.rank);
+    if (Number.isInteger(position) && position > 0) await context.globalState.update("leaderboard.position", position);
     await context.globalState.update(LAST_SENT_KEY, ledger.total);
     await context.globalState.update("leaderboard.lastSentPromptCount", ledger.promptCount);
     log.info(`Leaderboard: submitted ${ledger.total.toLocaleString()} cumulative input tokens.`);
+    return Number.isInteger(position) && position > 0 ? position : undefined;
   } catch (error) { log.warn(`Leaderboard: submission failed; it will retry after the next token increase. ${error instanceof Error ? error.message : String(error)}`); }
 }
 

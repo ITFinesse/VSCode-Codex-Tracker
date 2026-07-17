@@ -379,6 +379,8 @@ export const dashboardClient = String.raw`    const vscode = acquireVsCodeApi();
       settingsPanel.hidden = !settingsPanel.hidden;
       if (!settingsPanel.hidden) positionSettings();
     };
+    document.addEventListener('pointerdown', event => { if (!settingsPanel.hidden && !settingsPanel.contains(event.target) && event.target !== settingsToggle) settingsPanel.hidden = true; });
+    window.addEventListener('blur', () => { settingsPanel.hidden = true; });
     window.addEventListener('resize', () => { if (!settingsPanel.hidden) positionSettings(); });
     $('resetLayout').onclick = () => {
       cardLayout = {};
@@ -414,7 +416,7 @@ export const dashboardClient = String.raw`    const vscode = acquireVsCodeApi();
           belowFullColor: $('belowFullColor').value,
           warningColor: $('warningColor').value,
           criticalColor: $('criticalColor').value,
-          theme: $('themeMode').value
+          theme: $('themeMode').checked ? 'light' : 'dark'
         }
       });
       vscode.postMessage({ command: 'saveLeaderboard', leaderboard: { enabled: $('leaderboardEnabled').checked, name: $('leaderboardName').value, code: $('leaderboardCode').value } });
@@ -471,10 +473,12 @@ export const dashboardClient = String.raw`    const vscode = acquireVsCodeApi();
       const appearance = snapshot.appearance;
       document.body.dataset.theme = appearance.theme;
       leaderboard = snapshot.leaderboard || leaderboard;
+      $('leaderboardPosition').textContent = '🏆: ' + (leaderboard.position || '—');
       $('leaderboardEnabled').checked = leaderboard.enabled === true;
       $('leaderboardName').value = leaderboard.name || 'Anonymous';
       $('leaderboardCode').value = leaderboard.code || '';
-      ['refreshIntervalSeconds', 'warningThreshold', 'criticalThreshold', 'belowFullColor', 'warningColor', 'criticalColor', 'themeMode'].forEach(key => $(key).value = appearance[key]);
+      $('themeMode').checked = appearance.theme === 'light';
+      ['warningThreshold', 'criticalThreshold', 'belowFullColor', 'warningColor', 'criticalColor', 'refreshIntervalSeconds'].forEach(key => $(key).value = appearance[key]);
       $('defaultRangeDays').value = String(rangeDays);
       ['showSpend', 'showMetrics', 'showModels', 'showTokens', 'showPrompts'].forEach(key => $(key).checked = visibility[key] !== false);
       render();

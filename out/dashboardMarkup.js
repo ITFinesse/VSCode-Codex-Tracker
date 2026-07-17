@@ -9,7 +9,7 @@ exports.dashboardMarkup = String.raw `  <header class="topbar">
       <button class="range" data-days="30">30D</button>
       <button class="range" data-days="90">90D</button>
       <button class="range" data-days="0">Custom</button>
-      <button id="leaderboardButton" class="range" type="button">Leaderboard</button>
+      <button id="leaderboardButton" class="range" type="button">Leaderboard</button><span id="leaderboardPosition" class="leaderboard-position" aria-label="Leaderboard position">🏆: —</span>
     </nav>
     <div class="quota-strip">
       <span class="quota-pill">5H <strong id="fiveHour">N/A</strong><span id="fiveReset">Reset --</span></span>
@@ -26,44 +26,23 @@ exports.dashboardMarkup = String.raw `  <header class="topbar">
     <h2>Usage Settings</h2>
     <div class="build-meta"><span id="versionMeta">V:—</span><span id="buildTimeMeta">T:--:--</span></div>
     <form id="settingsForm">
-      <label>Default Filter
-        <select id="defaultRangeDays">
-          <option value="1">1D</option>
-          <option value="7">7D</option>
-          <option value="30">30D</option>
-          <option value="90">90D</option>
-          <option value="0">Custom / all history</option>
-        </select>
-      </label>
-      <label>Refresh Interval
-        <select id="refreshIntervalSeconds">
-          <option value="10">10 seconds</option>
-          <option value="30">30 seconds</option>
-          <option value="60">1 minute</option>
-          <option value="300">5 minutes</option>
-          <option value="900">15 minutes</option>
-          <option value="1800">30 minutes</option>
-          <option value="3600">1 hour</option>
-        </select>
-      </label>
-      <label>Theme
-        <select id="themeMode"><option value="dark">Dark</option><option value="light">Light</option></select>
-      </label>
+      <div class="settings-filters">
+        <label>Refresh Interval
+          <select id="refreshIntervalSeconds">
+            <option value="10">10 seconds</option><option value="30">30 seconds</option><option value="60">1 minute</option><option value="300">5 minutes</option><option value="900">15 minutes</option><option value="1800">30 minutes</option><option value="3600">1 hour</option>
+          </select>
+        </label>
+        <label>Default Filter
+          <select id="defaultRangeDays"><option value="1">1D</option><option value="7">7D</option><option value="30">30D</option><option value="90">90D</option><option value="0">Custom / all history</option></select>
+        </label>
+      </div>
+      <label class="theme-toggle"><input id="themeMode" type="checkbox"><span>Light mode</span></label>
       <div class="visibility">
-        <label><input id="showSpend" type="checkbox"> Spend chart</label>
-        <label><input id="showMetrics" type="checkbox"> Metric charts</label>
-        <label><input id="showModels" type="checkbox"> Model chart</label>
-        <label><input id="showTokens" type="checkbox"> Tokens chart</label>
-        <label><input id="showPrompts" type="checkbox"> Prompt usage</label>
+        <label><input id="showSpend" type="checkbox"> Spend chart</label><label><input id="showMetrics" type="checkbox"> Metric charts</label><label><input id="showModels" type="checkbox"> Model chart</label><label><input id="showTokens" type="checkbox"> Tokens chart</label><label><input id="showPrompts" type="checkbox"> Prompt usage</label>
       </div>
-      <div class="thresholds">
-        <label>Below 100%<input id="belowFullColor" type="color"></label>
-        <label>Warning<input id="warningColor" type="color"></label>
-        <label>Critical<input id="criticalColor" type="color"></label>
-      </div>
-      <div class="thresholds">
-        <label>Warning %<input id="warningThreshold" type="number" min="0" max="100"></label>
-        <label>Critical %<input id="criticalThreshold" type="number" min="0" max="100"></label>
+      <div class="colour-settings">
+        <div class="thresholds"><label>Below 100%<input id="belowFullColor" type="color"></label><label>Warning<input id="warningColor" type="color"></label><label>Critical<input id="criticalColor" type="color"></label></div>
+        <div class="thresholds"><label>Warning %<input id="warningThreshold" type="number" min="0" max="100"></label><label>Critical %<input id="criticalThreshold" type="number" min="0" max="100"></label></div>
       </div>
       <fieldset class="leaderboard-settings">
         <legend>Leaderboard: <a href="https://vscodecodextracker.itfinesse.co.uk" target="_blank" rel="noopener noreferrer">View: vscodecodextracker.itfinesse.co.uk</a></legend>

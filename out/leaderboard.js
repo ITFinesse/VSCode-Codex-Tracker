@@ -54,7 +54,7 @@ async function readLeaderboardSettings(context) {
     }
     const configuredName = config.get("leaderboardName", "");
     const name = configuredName.trim() && configuredName.trim() !== "Anonymous" ? normalizeName(configuredName) : await anonymousName(context);
-    return { enabled: config.get("leaderboardEnabled", true), name, code };
+    return { enabled: config.get("leaderboardEnabled", true), name, code, position: context.globalState.get("leaderboard.position") };
 }
 async function saveLeaderboardSettings(context, value) {
     if (!isObject(value))
@@ -82,7 +82,7 @@ async function submitLeaderboardUsage(context, prompts, log) {
     const ledger = updateLedger(context, prompts);
     const settings = await readLeaderboardSettings(context);
     if (!settings.enabled || ledger.total < 1_000 || (ledger.total <= context.globalState.get(LAST_SENT_KEY, 0) && ledger.promptCount <= context.globalState.get("leaderboard.lastSentPromptCount", 0)))
-        return;
+        return undefined;
     let deviceId = context.globalState.get(DEVICE_KEY);
     if (!deviceId) {
         deviceId = (0, node_crypto_1.randomBytes)(18).toString("base64url");
@@ -92,9 +92,13 @@ async function submitLeaderboardUsage(context, prompts, log) {
         const response = await request(LEADERBOARD_ENDPOINT, { action: "submit", name: settings.name, code: settings.code, device_id: deviceId, input_tokens_total: ledger.total, prompt_count_total: ledger.promptCount });
         if (response.ok !== true)
             throw new Error(String(response.message ?? "Leaderboard rejected the submission."));
+        const position = Number(response.position ?? response.rank);
+        if (Number.isInteger(position) && position > 0)
+            await context.globalState.update("leaderboard.position", position);
         await context.globalState.update(LAST_SENT_KEY, ledger.total);
         await context.globalState.update("leaderboard.lastSentPromptCount", ledger.promptCount);
         log.info(`Leaderboard: submitted ${ledger.total.toLocaleString()} cumulative input tokens.`);
+        return Number.isInteger(position) && position > 0 ? position : undefined;
     }
     catch (error) {
         log.warn(`Leaderboard: submission failed; it will retry after the next token increase. ${error instanceof Error ? error.message : String(error)}`);
