@@ -4,11 +4,11 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { spawn } from "node:child_process";
 import * as readline from "node:readline";
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import * as https from "node:https";
 import * as vscode from "vscode";
 import { professionalPanelHtml } from "./dashboard";
-import { checkLeaderboardName, readLeaderboardSettings, saveLeaderboardSettings, submitLeaderboardUsage } from "./leaderboard";
+import { checkLeaderboardName, readLeaderboardSettings, saveLeaderboardSettings, submitLeaderboardUsage, validateLedgerHistory, type LedgerValidation } from "./leaderboard";
 import { normalizeAppearanceSettings, parseRateLimitResponse, parseSessionText } from "./usage";
 
 type JsonObject = Record<string, unknown>;
@@ -45,6 +45,7 @@ interface UsageSnapshot {
   usageSource: "codex app-server" | "unavailable";
   scannedAt: Date;
   account?: AccountSummary;
+  ledgerValidation?: LedgerValidation;
 }
 
 let panel: vscode.WebviewView | undefined;
@@ -60,7 +61,7 @@ let extensionVersion = "V:—";
 let extensionBuildTime = "T:--:--";
 let leaderboardForWebview: { enabled: boolean; name: string; code: string } | undefined;
 const sessionFileCache = new Map<string, { size: number; modified: number; checkedAt: number; prompts: PromptRecord[] }>();
-let sessionFileListCache: { root: string; expiresAt: number; files: string[] } | undefined;
+let sessionFileListCache: { root: string; limit: number; expiresAt: number; files: string[] } | undefined;
 let rateLimitsCache:
   { expiresAt: number; value: { fiveHour: LimitWindow; weekly: LimitWindow; account?: AccountSummary } | undefined } | undefined;
 let rateLimitsInFlight: Promise<{ fiveHour: LimitWindow; weekly: LimitWindow; account?: AccountSummary } | undefined> | undefined;
@@ -69,6 +70,7 @@ const modelPricing = new Map<string, ModelPricing>();
 let modelPricingLoadInFlight: Promise<void> | undefined;
 let modelPricingLoaded = false;
 const loggedPricingWarnings = new Set<string>();
+const loggedQuotaWarnings = new Set<string>();
 type PricingSource = "openrouter" | "litellm" | "cache";
 interface ModelPricing { input: number; cachedInput: number; output: number; source: PricingSource; }
 interface ModelPricingCache { version: number; refreshedAt: number; rates: Record<string, Omit<ModelPricing, "source"> & Partial<Pick<ModelPricing, "source">>>; }
@@ -109,6 +111,36 @@ export function activate(context: vscode.ExtensionContext): void {
   let refreshInFlight = false;
   let refreshQueued = false;
   let initialRefreshScheduled = false;
+  let ledgerValidationTimer: NodeJS.Timeout | undefined;
+  let ledgerValidationRunning = false;
+  const scheduleLedgerValidation = (): void => {
+    if (ledgerValidationTimer) clearTimeout(ledgerValidationTimer);
+    ledgerValidationTimer = setTimeout(async () => {
+      if (!snapshotCache || ledgerValidationRunning) return;
+      ledgerValidationRunning = true;
+      try {
+        const files = await newestJsonlFiles(snapshotCache.sessionPath, Number.MAX_SAFE_INTEGER);
+        debugLog(`Ledger | source=codex-session-history | task=validation | action=start | files=${files.length}; ledgerScope=existing-ledger-prompts.`);
+        const history: PromptRecord[] = [];
+        for (const file of files) history.push(...(await readSession(file)));
+        const validation = validateLedgerHistory(context, history);
+        snapshotCache = { ...snapshotCache, ledgerValidation: validation };
+        await saveUsageCache(context, snapshotCache);
+        if (webviewReady) postSnapshot(snapshotCache);
+        const result = validation.valid ? "valid" : "mismatch";
+        const message = `Ledger | source=codex-session-history | task=validation | action=complete | result=${result}; matched=${validation.matchedPrompts}; missing=${validation.missingPrompts}; mismatched=${validation.mismatchedPrompts}; ledgerTokens=${validation.ledgerTokens}; historyTokens=${validation.historyTokens}.`;
+        if (validation.valid) {
+          debugLog(message);
+        } else {
+          debugWarn(message);
+        }
+      } catch (error) {
+        debugWarn(`Ledger | source=codex-session-history | task=validation | action=complete | result=failed; reason=${error instanceof Error ? error.message : String(error)}.`);
+      } finally {
+        ledgerValidationRunning = false;
+      }
+    }, 120_000);
+  };
   const refresh = async (changedFile?: string): Promise<void> => {
     if (refreshInFlight) {
       if (!refreshQueued) {
@@ -135,6 +167,7 @@ export function activate(context: vscode.ExtensionContext): void {
         }
         void submitLeaderboardUsage(context, snapshot.prompts.map((prompt) => ({ ...prompt, estimatedCost: estimateCost(prompt) })), { info: debugLog, warn: debugWarn }).then(async (position) => { if (!position || !snapshotCache) return; leaderboardForWebview = await readLeaderboardSettings(context); postSnapshot(snapshotCache); });
         debugLog(`Usage refreshed from ${snapshot.usageSource}.`);
+        scheduleLedgerValidation();
       } catch (error) {
         const message = error instanceof Error ? error.message : "Could not read Codex usage";
         debugError(`Refresh failed: ${message}`);
@@ -253,12 +286,13 @@ export function activate(context: vscode.ExtensionContext): void {
     } catch (error) { debugWarn(`Watcher: unavailable for ${sessionPath}: ${error instanceof Error ? error.message : String(error)}`); }
   };
   watchSessions();
-  context.subscriptions.push({ dispose: () => { if (sessionChangeTimer) clearTimeout(sessionChangeTimer); sessionWatcher?.close(); } });
+  context.subscriptions.push({ dispose: () => { if (sessionChangeTimer) clearTimeout(sessionChangeTimer); if (ledgerValidationTimer) clearTimeout(ledgerValidationTimer); sessionWatcher?.close(); } });
   void loadUsageCache(context).then((cached) => {
     if (!cached) { scheduleInitialRefresh(); return; }
     snapshotCache = cached;
     updateStatusBar(cached);
     void ensureModelPricing(context).then(() => { if (snapshotCache && webviewReady) postSnapshot(snapshotCache); });
+    scheduleLedgerValidation();
   });
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((event) => {
@@ -274,17 +308,23 @@ async function usageCacheKey(context: vscode.ExtensionContext): Promise<Buffer> 
   if (!encoded) { encoded = randomBytes(32).toString("base64"); await context.secrets.store(USAGE_CACHE_SECRET, encoded); }
   return Buffer.from(encoded, "base64");
 }
+function usageCachePath(context: vscode.ExtensionContext): string {
+  const configured = vscode.workspace.getConfiguration("codexUsage").get<string>("sessionsPath", "").trim();
+  const sessionPath = path.resolve(configured || path.join(os.homedir(), ".codex", "sessions"));
+  const scope = createHash("sha256").update(sessionPath.toLowerCase()).digest("hex").slice(0, 16);
+  return path.join(context.globalStorageUri.fsPath, `${USAGE_CACHE_FILE.replace(".json", "")}-${scope}.json`);
+}
 async function saveUsageCache(context: vscode.ExtensionContext, snapshot: UsageSnapshot): Promise<void> {
   const payload = JSON.stringify(snapshot);
   const signature = createHmac("sha256", await usageCacheKey(context)).update(payload).digest("base64");
-  const target = path.join(context.globalStorageUri.fsPath, USAGE_CACHE_FILE);
+  const target = usageCachePath(context);
   await fs.mkdir(path.dirname(target), { recursive: true });
   await fs.writeFile(target, JSON.stringify({ version: 1, payload, signature }), "utf8");
   debugLog(`Cache: saved ${snapshot.prompts.length} dashboard prompt(s).`);
 }
 async function loadUsageCache(context: vscode.ExtensionContext): Promise<UsageSnapshot | undefined> {
   try {
-    const target = path.join(context.globalStorageUri.fsPath, USAGE_CACHE_FILE);
+    const target = usageCachePath(context);
     const stored = object(JSON.parse(await fs.readFile(target, "utf8")));
     const payload = typeof stored?.payload === "string" ? stored.payload : undefined;
     const signature = typeof stored?.signature === "string" ? stored.signature : undefined;
@@ -297,8 +337,9 @@ async function loadUsageCache(context: vscode.ExtensionContext): Promise<UsageSn
     const scannedAt = dateFrom(raw?.scannedAt);
     if (!scannedAt || !prompts.length) throw new Error("cache snapshot missing prompts");
     const limit = (value: unknown): LimitWindow => { const item = object(value); return { remainingPercent: number(item?.remainingPercent), resetAt: dateFrom(item?.resetAt), windowDurationMins: number(item?.windowDurationMins) }; };
+    const validation = object(raw?.ledgerValidation); const ledgerValidation = validation && typeof validation.valid === "boolean" && dateFrom(validation.checkedAt) ? { valid: validation.valid, checkedAt: dateFrom(validation.checkedAt)!, matchedPrompts: number(validation.matchedPrompts) ?? 0, missingPrompts: number(validation.missingPrompts) ?? 0, mismatchedPrompts: number(validation.mismatchedPrompts) ?? 0, ledgerTokens: number(validation.ledgerTokens) ?? 0, historyTokens: number(validation.historyTokens) ?? 0 } : undefined;
     debugLog(`Cache: loaded ${prompts.length} dashboard prompt(s).`);
-    return { fiveHour: limit(raw?.fiveHour), weekly: limit(raw?.weekly), prompts, sessionPath: typeof raw?.sessionPath === "string" ? raw.sessionPath : "", usageSource: raw?.usageSource === "codex app-server" ? "codex app-server" : "unavailable", scannedAt, account: object(raw?.account) ? { plan: typeof object(raw?.account)?.plan === "string" ? object(raw?.account)?.plan as string : undefined, credits: typeof object(raw?.account)?.credits === "string" ? object(raw?.account)?.credits as string : undefined, renewalDate: dateFrom(object(raw?.account)?.renewalDate) } : undefined };
+    return { fiveHour: limit(raw?.fiveHour), weekly: limit(raw?.weekly), prompts, sessionPath: typeof raw?.sessionPath === "string" ? raw.sessionPath : "", usageSource: raw?.usageSource === "codex app-server" ? "codex app-server" : "unavailable", scannedAt, account: object(raw?.account) ? { plan: typeof object(raw?.account)?.plan === "string" ? object(raw?.account)?.plan as string : undefined, credits: typeof object(raw?.account)?.credits === "string" ? object(raw?.account)?.credits as string : undefined, renewalDate: dateFrom(object(raw?.account)?.renewalDate) } : undefined, ledgerValidation }
   } catch (error) { debugWarn(`Cache: unavailable or rejected: ${error instanceof Error ? error.message : String(error)}`); return undefined; }
 }
 
@@ -315,7 +356,7 @@ async function collectUsage(changedFile?: string): Promise<UsageSnapshot> {
     const updatedPrompts = await readSession(changedFile, true);
     const prompts = [...snapshotCache.prompts.filter((prompt) => prompt.session !== session), ...updatedPrompts].sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime()).slice(0, limit);
     debugLog(`Collect: updated active session ${session}; ${updatedPrompts.length} prompt(s), no historical scan.`);
-    return { ...snapshotCache, fiveHour: liveLimits?.fiveHour ?? snapshotCache.fiveHour, weekly: liveLimits?.weekly ?? snapshotCache.weekly, account: liveLimits?.account ?? snapshotCache.account, usageSource: liveLimits ? "codex app-server" : snapshotCache.usageSource, prompts, scannedAt: new Date() };
+    return { ...snapshotCache, fiveHour: hasLimitData(liveLimits?.fiveHour) ? liveLimits!.fiveHour : snapshotCache.fiveHour, weekly: hasLimitData(liveLimits?.weekly) ? liveLimits!.weekly : snapshotCache.weekly, account: liveLimits?.account ?? snapshotCache.account, usageSource: liveLimits ? "codex app-server" : snapshotCache.usageSource, prompts, scannedAt: new Date() };
   }
   const liveLimitsPromise = readLiveRateLimits();
   const scanStartedAt = performance.now();
@@ -369,10 +410,21 @@ async function readLiveRateLimits(force = false): Promise<{ fiveHour: LimitWindo
 async function requestLiveRateLimits(): Promise<{ fiveHour: LimitWindow; weekly: LimitWindow; account?: AccountSummary } | undefined> {
   debugLog("Limits: requesting Codex app-server rate limits.");
   const result = await readAppServerResult().catch((error) => {
-    debugLog(`Limits: app-server request failed: ${String(error)}`);
+    debugWarn(`Limits: app-server request failed: ${String(error)}`);
     return undefined;
   });
-  return parseRateLimitResponse(result);
+  const limits = parseRateLimitResponse(result);
+  if (!limits) {
+    const warning = "Limits: Codex returned no usable quota windows.";
+    if (!loggedQuotaWarnings.has(warning)) { loggedQuotaWarnings.add(warning); debugWarn(warning); }
+  } else if (!hasLimitData(limits.fiveHour)) {
+    const warning = "Limits: Codex returned a weekly window but did not supply a 5-hour window; preserving the last 5-hour value when available.";
+    if (!loggedQuotaWarnings.has(warning)) { loggedQuotaWarnings.add(warning); debugWarn(warning); }
+  }
+  return limits;
+}
+function hasLimitData(window: LimitWindow | undefined): window is LimitWindow {
+  return window?.remainingPercent !== undefined || window?.resetAt !== undefined || window?.windowDurationMins !== undefined;
 }
 
 function rateLimitSources(root: JsonObject): JsonObject[] {
@@ -505,11 +557,7 @@ async function ensureModelPricing(context: vscode.ExtensionContext): Promise<voi
       for (const [id, rate] of Object.entries(cached.rates ?? {})) modelPricing.set(id, { ...rate, source: rate.source === "openrouter" || rate.source === "litellm" ? rate.source : "cache" });
       debugLog(`Pricing: loaded ${modelPricing.size} cached rate(s) from local model-prices.json; provider metadata=${cached.version >= 3 ? "preserved" : "unavailable (legacy cache)"}.`);
     } catch (error) { debugLog(`Pricing: local model-prices.json unavailable: ${error instanceof Error ? error.message : String(error)}.`); }
-    try {
-      const accessible = await accessibleModelKeys();
-      for (const id of modelPricing.keys()) if (!accessible.has(modelKey(id))) modelPricing.delete(id);
-      debugLog(`Pricing: cache retained ${modelPricing.size} rate(s) for accessible models.`);
-    } catch (error) { debugWarn(`Pricing: access filter unavailable; retaining cached catalogue. ${error instanceof Error ? error.message : String(error)}`); }
+    debugLog(`Pricing: retained ${modelPricing.size} cached rate(s), including historical models.`);
     modelPricingLoaded = true;
     if (!cached || cached.version < 3 || cached.refreshedAt + MODEL_PRICING_REFRESH_MS <= Date.now()) void refreshModelPricing(context, cachePath);
   })();
@@ -544,12 +592,12 @@ async function refreshModelPricing(context: vscode.ExtensionContext, cachePath: 
     for (const id of merged.keys()) if (!accessible.has(modelKey(id))) merged.delete(id);
     const fallbackModels: string[] = [];
     for (const [id, pricing] of cachedRates) {
-      if (accessible.has(modelKey(id)) && !merged.has(id)) {
+      if (!merged.has(id)) {
         merged.set(id, { ...pricing, source: "cache" });
         fallbackModels.push(id);
       }
     }
-    debugLog(`Pricing: retained ${merged.size} rate(s) for accessible models; local-cache fallback=${fallbackModels.length ? fallbackModels.join(",") : "none"}.`);
+    debugLog(`Pricing: retained ${merged.size} rate(s); local-cache fallback=${fallbackModels.length ? fallbackModels.join(",") : "none"}.`);
   } catch (error) { debugWarn(`Pricing: access filter failed; live catalogue not saved. ${error instanceof Error ? error.message : String(error)}`); return false; }
   if (!openRouterOk && !liteLlmOk) { debugWarn("Pricing: both live providers failed; continuing with the last local catalogue."); return false; }
   if (!merged.size) { debugWarn("Pricing: live providers returned no complete rates for accessible models; continuing with the last local catalogue."); return false; }
@@ -571,7 +619,18 @@ function debugLog(message: string): void { debugOutput("INFO", message); }
 function debugWarn(message: string): void { debugOutput("WARN", message); }
 function debugError(message: string): void { debugOutput("ERROR", message); }
 function debugOutput(level: "INFO" | "WARN" | "ERROR", message: string): void {
-  if (readAppearanceSettings().outputDebug) output.appendLine(`[${level}] ${message}`);
+  if (!readAppearanceSettings().outputDebug) return;
+  output.appendLine(`[${level}] ${structuredDebugMessage(message)}`);
+}
+function structuredDebugMessage(message: string): string {
+  if (/^[A-Za-z][A-Za-z -]* \\| source=[^|]+ \\| task=[^|]+ \\| action=[^|]+/.test(message)) return message;
+  const separator = message.indexOf(":");
+  const source = (separator > 0 ? message.slice(0, separator) : "extension")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-") || "extension";
+  const detail = (separator > 0 ? message.slice(separator + 1) : message).trim();
+  return `Extension | source=${source} | task=diagnostic | action=event | detail=${detail}`;
 }
 function appServerResponseSummary(method: string, result: unknown): string {
   if (method !== "account/rateLimits/read") return `App-server ${method}: response received.`;
@@ -668,7 +727,7 @@ async function resolveCodexCommand(): Promise<string> {
 }
 
 async function newestJsonlFiles(root: string, limit: number): Promise<string[]> {
-  if (sessionFileListCache?.root === root && sessionFileListCache.expiresAt > Date.now()) return sessionFileListCache.files;
+  if (sessionFileListCache?.root === root && sessionFileListCache.limit === limit && sessionFileListCache.expiresAt > Date.now()) return sessionFileListCache.files;
   const candidates: Array<{ file: string; modified: number }> = [];
   const directories = [root];
   const visit = async (): Promise<void> => {
@@ -689,7 +748,7 @@ async function newestJsonlFiles(root: string, limit: number): Promise<string[]> 
   };
   await Promise.all(Array.from({ length: DIRECTORY_SCAN_CONCURRENCY }, visit));
   const files = candidates.sort((a, b) => b.modified - a.modified).slice(0, limit).map((candidate) => candidate.file);
-  sessionFileListCache = { root, files, expiresAt: Date.now() + SESSION_DISCOVERY_CACHE_MS };
+  sessionFileListCache = { root, limit, files, expiresAt: Date.now() + SESSION_DISCOVERY_CACHE_MS };
   return files;
 }
 
@@ -829,6 +888,7 @@ function postSnapshot(snapshot: UsageSnapshot): void {
           : undefined,
         appearance: readAppearanceSettings(),
         leaderboard: leaderboardForWebview,
+        ledgerValidation: snapshot.ledgerValidation ? { ...snapshot.ledgerValidation, checkedAt: snapshot.ledgerValidation.checkedAt.getTime() } : undefined,
         scannedAt: formatDateTime(snapshot.scannedAt),
         nextRefreshAt,
         metadata: { version: extensionVersion, buildTime: extensionBuildTime, lastUpdate: formatClock(snapshot.scannedAt) }
@@ -847,7 +907,7 @@ function formatPercent(window: LimitWindow): string {
   return window.remainingPercent === undefined ? "N/A" : `${Math.round(window.remainingPercent).toString().padStart(2, "0")}%`;
 }
 function formatReset(window: LimitWindow): string {
-  return window.resetAt ? formatDateTime(window.resetAt) : "--";
+  return window.resetAt ? formatDateTime(window.resetAt) : "N/A";
 }
 function formatResetPercent(window: LimitWindow): number {
   if (!window.resetAt || !window.windowDurationMins) return 0;

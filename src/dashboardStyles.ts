@@ -14,7 +14,7 @@ export const dashboardStyles = String.raw`    :root{
     .topbar{display:flex;align-items:center;gap:24px;margin:0 2px 18px}
     .title{font-size:26px;font-weight:700}
     .ranges,.top-actions,.quota-strip,.table-head{display:flex;align-items:center;gap:8px}
-    .range,.sort{border:0;background:transparent;color:var(--muted);padding:7px 10px;border-radius:4px;cursor:pointer}.leaderboard-position{color:var(--accent);font-size:11px;font-weight:700;white-space:nowrap}
+    .range,.sort{border:0;background:transparent;color:var(--muted);padding:7px 10px;border-radius:4px;cursor:pointer}.leaderboard-position{color:var(--accent);font-size:11px;font-weight:700;white-space:nowrap}.ledger-validation{display:inline-flex;align-items:center;gap:4px;color:var(--muted);font-size:11px;white-space:nowrap}.ledger-validation i{width:8px;height:8px;border-radius:50%;background:var(--muted)}.ledger-validation.valid i{background:var(--teal)}.ledger-validation.invalid i{background:var(--vscode-errorForeground,#f48771)}.ledger-validation.pending i{background:var(--accent)}
     .range.active,.sort.active{color:var(--accent);background:var(--vscode-toolbar-hoverBackground,#2b2b2b);box-shadow:inset 0 0 0 1px var(--border)}
     .quota-strip{justify-content:center;flex:1;white-space:nowrap}
     .quota-bars{display:flex;align-items:flex-end;gap:7px;height:42px;margin:0 10px}

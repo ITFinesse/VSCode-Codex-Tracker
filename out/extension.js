@@ -68,6 +68,7 @@ const modelPricing = new Map();
 let modelPricingLoadInFlight;
 let modelPricingLoaded = false;
 const loggedPricingWarnings = new Set();
+const loggedQuotaWarnings = new Set();
 const DIRECTORY_SCAN_CONCURRENCY = 8;
 const SESSION_DISCOVERY_CACHE_MS = 30_000;
 const SESSION_STAT_CACHE_MS = 30_000;
@@ -104,6 +105,43 @@ function activate(context) {
     let refreshInFlight = false;
     let refreshQueued = false;
     let initialRefreshScheduled = false;
+    let ledgerValidationTimer;
+    let ledgerValidationRunning = false;
+    const scheduleLedgerValidation = () => {
+        if (ledgerValidationTimer)
+            clearTimeout(ledgerValidationTimer);
+        ledgerValidationTimer = setTimeout(async () => {
+            if (!snapshotCache || ledgerValidationRunning)
+                return;
+            ledgerValidationRunning = true;
+            try {
+                const files = await newestJsonlFiles(snapshotCache.sessionPath, Number.MAX_SAFE_INTEGER);
+                debugLog(`Ledger | source=codex-session-history | task=validation | action=start | files=${files.length}; ledgerScope=existing-ledger-prompts.`);
+                const history = [];
+                for (const file of files)
+                    history.push(...(await readSession(file)));
+                const validation = (0, leaderboard_1.validateLedgerHistory)(context, history);
+                snapshotCache = { ...snapshotCache, ledgerValidation: validation };
+                await saveUsageCache(context, snapshotCache);
+                if (webviewReady)
+                    postSnapshot(snapshotCache);
+                const result = validation.valid ? "valid" : "mismatch";
+                const message = `Ledger | source=codex-session-history | task=validation | action=complete | result=${result}; matched=${validation.matchedPrompts}; missing=${validation.missingPrompts}; mismatched=${validation.mismatchedPrompts}; ledgerTokens=${validation.ledgerTokens}; historyTokens=${validation.historyTokens}.`;
+                if (validation.valid) {
+                    debugLog(message);
+                }
+                else {
+                    debugWarn(message);
+                }
+            }
+            catch (error) {
+                debugWarn(`Ledger | source=codex-session-history | task=validation | action=complete | result=failed; reason=${error instanceof Error ? error.message : String(error)}.`);
+            }
+            finally {
+                ledgerValidationRunning = false;
+            }
+        }, 120_000);
+    };
     const refresh = async (changedFile) => {
         if (refreshInFlight) {
             if (!refreshQueued) {
@@ -132,6 +170,7 @@ function activate(context) {
                 void (0, leaderboard_1.submitLeaderboardUsage)(context, snapshot.prompts.map((prompt) => ({ ...prompt, estimatedCost: estimateCost(prompt) })), { info: debugLog, warn: debugWarn }).then(async (position) => { if (!position || !snapshotCache)
                     return; leaderboardForWebview = await (0, leaderboard_1.readLeaderboardSettings)(context); postSnapshot(snapshotCache); });
                 debugLog(`Usage refreshed from ${snapshot.usageSource}.`);
+                scheduleLedgerValidation();
             }
             catch (error) {
                 const message = error instanceof Error ? error.message : "Could not read Codex usage";
@@ -254,7 +293,8 @@ function activate(context) {
     };
     watchSessions();
     context.subscriptions.push({ dispose: () => { if (sessionChangeTimer)
-            clearTimeout(sessionChangeTimer); sessionWatcher?.close(); } });
+            clearTimeout(sessionChangeTimer); if (ledgerValidationTimer)
+            clearTimeout(ledgerValidationTimer); sessionWatcher?.close(); } });
     void loadUsageCache(context).then((cached) => {
         if (!cached) {
             scheduleInitialRefresh();
@@ -264,6 +304,7 @@ function activate(context) {
         updateStatusBar(cached);
         void ensureModelPricing(context).then(() => { if (snapshotCache && webviewReady)
             postSnapshot(snapshotCache); });
+        scheduleLedgerValidation();
     });
     context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((event) => {
         if (event.affectsConfiguration("codexUsage.sessionsPath")) {
@@ -285,17 +326,23 @@ async function usageCacheKey(context) {
     }
     return Buffer.from(encoded, "base64");
 }
+function usageCachePath(context) {
+    const configured = vscode.workspace.getConfiguration("codexUsage").get("sessionsPath", "").trim();
+    const sessionPath = path.resolve(configured || path.join(os.homedir(), ".codex", "sessions"));
+    const scope = (0, node_crypto_1.createHash)("sha256").update(sessionPath.toLowerCase()).digest("hex").slice(0, 16);
+    return path.join(context.globalStorageUri.fsPath, `${USAGE_CACHE_FILE.replace(".json", "")}-${scope}.json`);
+}
 async function saveUsageCache(context, snapshot) {
     const payload = JSON.stringify(snapshot);
     const signature = (0, node_crypto_1.createHmac)("sha256", await usageCacheKey(context)).update(payload).digest("base64");
-    const target = path.join(context.globalStorageUri.fsPath, USAGE_CACHE_FILE);
+    const target = usageCachePath(context);
     await fs.mkdir(path.dirname(target), { recursive: true });
     await fs.writeFile(target, JSON.stringify({ version: 1, payload, signature }), "utf8");
     debugLog(`Cache: saved ${snapshot.prompts.length} dashboard prompt(s).`);
 }
 async function loadUsageCache(context) {
     try {
-        const target = path.join(context.globalStorageUri.fsPath, USAGE_CACHE_FILE);
+        const target = usageCachePath(context);
         const stored = object(JSON.parse(await fs.readFile(target, "utf8")));
         const payload = typeof stored?.payload === "string" ? stored.payload : undefined;
         const signature = typeof stored?.signature === "string" ? stored.signature : undefined;
@@ -311,8 +358,10 @@ async function loadUsageCache(context) {
         if (!scannedAt || !prompts.length)
             throw new Error("cache snapshot missing prompts");
         const limit = (value) => { const item = object(value); return { remainingPercent: number(item?.remainingPercent), resetAt: dateFrom(item?.resetAt), windowDurationMins: number(item?.windowDurationMins) }; };
+        const validation = object(raw?.ledgerValidation);
+        const ledgerValidation = validation && typeof validation.valid === "boolean" && dateFrom(validation.checkedAt) ? { valid: validation.valid, checkedAt: dateFrom(validation.checkedAt), matchedPrompts: number(validation.matchedPrompts) ?? 0, missingPrompts: number(validation.missingPrompts) ?? 0, mismatchedPrompts: number(validation.mismatchedPrompts) ?? 0, ledgerTokens: number(validation.ledgerTokens) ?? 0, historyTokens: number(validation.historyTokens) ?? 0 } : undefined;
         debugLog(`Cache: loaded ${prompts.length} dashboard prompt(s).`);
-        return { fiveHour: limit(raw?.fiveHour), weekly: limit(raw?.weekly), prompts, sessionPath: typeof raw?.sessionPath === "string" ? raw.sessionPath : "", usageSource: raw?.usageSource === "codex app-server" ? "codex app-server" : "unavailable", scannedAt, account: object(raw?.account) ? { plan: typeof object(raw?.account)?.plan === "string" ? object(raw?.account)?.plan : undefined, credits: typeof object(raw?.account)?.credits === "string" ? object(raw?.account)?.credits : undefined, renewalDate: dateFrom(object(raw?.account)?.renewalDate) } : undefined };
+        return { fiveHour: limit(raw?.fiveHour), weekly: limit(raw?.weekly), prompts, sessionPath: typeof raw?.sessionPath === "string" ? raw.sessionPath : "", usageSource: raw?.usageSource === "codex app-server" ? "codex app-server" : "unavailable", scannedAt, account: object(raw?.account) ? { plan: typeof object(raw?.account)?.plan === "string" ? object(raw?.account)?.plan : undefined, credits: typeof object(raw?.account)?.credits === "string" ? object(raw?.account)?.credits : undefined, renewalDate: dateFrom(object(raw?.account)?.renewalDate) } : undefined, ledgerValidation };
     }
     catch (error) {
         debugWarn(`Cache: unavailable or rejected: ${error instanceof Error ? error.message : String(error)}`);
@@ -332,7 +381,7 @@ async function collectUsage(changedFile) {
         const updatedPrompts = await readSession(changedFile, true);
         const prompts = [...snapshotCache.prompts.filter((prompt) => prompt.session !== session), ...updatedPrompts].sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime()).slice(0, limit);
         debugLog(`Collect: updated active session ${session}; ${updatedPrompts.length} prompt(s), no historical scan.`);
-        return { ...snapshotCache, fiveHour: liveLimits?.fiveHour ?? snapshotCache.fiveHour, weekly: liveLimits?.weekly ?? snapshotCache.weekly, account: liveLimits?.account ?? snapshotCache.account, usageSource: liveLimits ? "codex app-server" : snapshotCache.usageSource, prompts, scannedAt: new Date() };
+        return { ...snapshotCache, fiveHour: hasLimitData(liveLimits?.fiveHour) ? liveLimits.fiveHour : snapshotCache.fiveHour, weekly: hasLimitData(liveLimits?.weekly) ? liveLimits.weekly : snapshotCache.weekly, account: liveLimits?.account ?? snapshotCache.account, usageSource: liveLimits ? "codex app-server" : snapshotCache.usageSource, prompts, scannedAt: new Date() };
     }
     const liveLimitsPromise = readLiveRateLimits();
     const scanStartedAt = performance.now();
@@ -385,10 +434,28 @@ async function readLiveRateLimits(force = false) {
 async function requestLiveRateLimits() {
     debugLog("Limits: requesting Codex app-server rate limits.");
     const result = await readAppServerResult().catch((error) => {
-        debugLog(`Limits: app-server request failed: ${String(error)}`);
+        debugWarn(`Limits: app-server request failed: ${String(error)}`);
         return undefined;
     });
-    return (0, usage_1.parseRateLimitResponse)(result);
+    const limits = (0, usage_1.parseRateLimitResponse)(result);
+    if (!limits) {
+        const warning = "Limits: Codex returned no usable quota windows.";
+        if (!loggedQuotaWarnings.has(warning)) {
+            loggedQuotaWarnings.add(warning);
+            debugWarn(warning);
+        }
+    }
+    else if (!hasLimitData(limits.fiveHour)) {
+        const warning = "Limits: Codex returned a weekly window but did not supply a 5-hour window; preserving the last 5-hour value when available.";
+        if (!loggedQuotaWarnings.has(warning)) {
+            loggedQuotaWarnings.add(warning);
+            debugWarn(warning);
+        }
+    }
+    return limits;
+}
+function hasLimitData(window) {
+    return window?.remainingPercent !== undefined || window?.resetAt !== undefined || window?.windowDurationMins !== undefined;
 }
 function rateLimitSources(root) {
     const sources = [root];
@@ -529,16 +596,7 @@ async function ensureModelPricing(context) {
         catch (error) {
             debugLog(`Pricing: local model-prices.json unavailable: ${error instanceof Error ? error.message : String(error)}.`);
         }
-        try {
-            const accessible = await accessibleModelKeys();
-            for (const id of modelPricing.keys())
-                if (!accessible.has(modelKey(id)))
-                    modelPricing.delete(id);
-            debugLog(`Pricing: cache retained ${modelPricing.size} rate(s) for accessible models.`);
-        }
-        catch (error) {
-            debugWarn(`Pricing: access filter unavailable; retaining cached catalogue. ${error instanceof Error ? error.message : String(error)}`);
-        }
+        debugLog(`Pricing: retained ${modelPricing.size} cached rate(s), including historical models.`);
         modelPricingLoaded = true;
         if (!cached || cached.version < 3 || cached.refreshedAt + MODEL_PRICING_REFRESH_MS <= Date.now())
             void refreshModelPricing(context, cachePath);
@@ -598,12 +656,12 @@ async function refreshModelPricing(context, cachePath) {
                 merged.delete(id);
         const fallbackModels = [];
         for (const [id, pricing] of cachedRates) {
-            if (accessible.has(modelKey(id)) && !merged.has(id)) {
+            if (!merged.has(id)) {
                 merged.set(id, { ...pricing, source: "cache" });
                 fallbackModels.push(id);
             }
         }
-        debugLog(`Pricing: retained ${merged.size} rate(s) for accessible models; local-cache fallback=${fallbackModels.length ? fallbackModels.join(",") : "none"}.`);
+        debugLog(`Pricing: retained ${merged.size} rate(s); local-cache fallback=${fallbackModels.length ? fallbackModels.join(",") : "none"}.`);
     }
     catch (error) {
         debugWarn(`Pricing: access filter failed; live catalogue not saved. ${error instanceof Error ? error.message : String(error)}`);
@@ -643,8 +701,20 @@ function debugLog(message) { debugOutput("INFO", message); }
 function debugWarn(message) { debugOutput("WARN", message); }
 function debugError(message) { debugOutput("ERROR", message); }
 function debugOutput(level, message) {
-    if (readAppearanceSettings().outputDebug)
-        output.appendLine(`[${level}] ${message}`);
+    if (!readAppearanceSettings().outputDebug)
+        return;
+    output.appendLine(`[${level}] ${structuredDebugMessage(message)}`);
+}
+function structuredDebugMessage(message) {
+    if (/^[A-Za-z][A-Za-z -]* \\| source=[^|]+ \\| task=[^|]+ \\| action=[^|]+/.test(message))
+        return message;
+    const separator = message.indexOf(":");
+    const source = (separator > 0 ? message.slice(0, separator) : "extension")
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-") || "extension";
+    const detail = (separator > 0 ? message.slice(separator + 1) : message).trim();
+    return `Extension | source=${source} | task=diagnostic | action=event | detail=${detail}`;
 }
 function appServerResponseSummary(method, result) {
     if (method !== "account/rateLimits/read")
@@ -740,7 +810,7 @@ async function resolveCodexCommand() {
     return "codex";
 }
 async function newestJsonlFiles(root, limit) {
-    if (sessionFileListCache?.root === root && sessionFileListCache.expiresAt > Date.now())
+    if (sessionFileListCache?.root === root && sessionFileListCache.limit === limit && sessionFileListCache.expiresAt > Date.now())
         return sessionFileListCache.files;
     const candidates = [];
     const directories = [root];
@@ -764,7 +834,7 @@ async function newestJsonlFiles(root, limit) {
     };
     await Promise.all(Array.from({ length: DIRECTORY_SCAN_CONCURRENCY }, visit));
     const files = candidates.sort((a, b) => b.modified - a.modified).slice(0, limit).map((candidate) => candidate.file);
-    sessionFileListCache = { root, files, expiresAt: Date.now() + SESSION_DISCOVERY_CACHE_MS };
+    sessionFileListCache = { root, limit, files, expiresAt: Date.now() + SESSION_DISCOVERY_CACHE_MS };
     return files;
 }
 async function readSession(file, forceCheck = false) {
@@ -900,6 +970,7 @@ function postSnapshot(snapshot) {
                 : undefined,
             appearance: readAppearanceSettings(),
             leaderboard: leaderboardForWebview,
+            ledgerValidation: snapshot.ledgerValidation ? { ...snapshot.ledgerValidation, checkedAt: snapshot.ledgerValidation.checkedAt.getTime() } : undefined,
             scannedAt: formatDateTime(snapshot.scannedAt),
             nextRefreshAt,
             metadata: { version: extensionVersion, buildTime: extensionBuildTime, lastUpdate: formatClock(snapshot.scannedAt) }
@@ -911,7 +982,7 @@ function formatPercent(window) {
     return window.remainingPercent === undefined ? "N/A" : `${Math.round(window.remainingPercent).toString().padStart(2, "0")}%`;
 }
 function formatReset(window) {
-    return window.resetAt ? formatDateTime(window.resetAt) : "--";
+    return window.resetAt ? formatDateTime(window.resetAt) : "N/A";
 }
 function formatResetPercent(window) {
     if (!window.resetAt || !window.windowDurationMins)

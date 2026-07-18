@@ -6,12 +6,12 @@ export const dashboardMarkup = String.raw`  <header class="topbar">
       <button class="range" data-days="30">30D</button>
       <button class="range" data-days="90">90D</button>
       <button class="range" data-days="0">Custom</button>
-      <button id="leaderboardButton" class="range" type="button">Leaderboard</button><span id="leaderboardPosition" class="leaderboard-position" aria-label="Leaderboard position">🏆: —</span>
+      <button id="leaderboardButton" class="range" type="button">Leaderboard</button><span id="leaderboardPosition" class="leaderboard-position" aria-label="Leaderboard position">🏆: —</span><span id="ledgerValidation" class="ledger-validation pending" title="Ledger validation pending"><i></i>Ledger</span>
     </nav>
     <div class="quota-strip">
-      <span class="quota-pill">5H <strong id="fiveHour">N/A</strong><span id="fiveReset">Reset --</span></span>
+      <span class="quota-pill">5H <strong id="fiveHour">N/A</strong><span id="fiveReset">Reset N/A</span></span>
       <div class="quota-bars" aria-label="Quota remaining and reset progress"><span class="quota-bar"><i id="fiveRemainingBar" style="height:2px"></i><span>5H</span></span><span class="quota-bar reset"><i id="fiveResetBar" style="height:2px"></i><span>R</span></span><span class="quota-bar"><i id="weeklyRemainingBar" style="height:2px"></i><span>W</span></span><span class="quota-bar reset"><i id="weeklyResetBar" style="height:2px"></i><span>R</span></span></div>
-      <span class="quota-pill">Weekly <strong id="weekly">--%</strong><span id="weeklyReset">Reset --</span></span>
+      <span class="quota-pill">Weekly <strong id="weekly">N/A</strong><span id="weeklyReset">Reset N/A</span></span>
     </div>
     <div class="top-actions">
       <span id="updated">Loading…</span>

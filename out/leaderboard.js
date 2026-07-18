@@ -37,13 +37,16 @@ exports.readLeaderboardSettings = readLeaderboardSettings;
 exports.saveLeaderboardSettings = saveLeaderboardSettings;
 exports.checkLeaderboardName = checkLeaderboardName;
 exports.submitLeaderboardUsage = submitLeaderboardUsage;
+exports.validateLedgerHistory = validateLedgerHistory;
 const node_crypto_1 = require("node:crypto");
 const vscode = __importStar(require("vscode"));
 const CODE_KEY = "leaderboard.code";
 const DEVICE_KEY = "leaderboard.deviceId";
 const LEDGER_KEY = "leaderboard.usageLedger.v2";
+const LEGACY_LEDGER_KEY = "leaderboard.inputLedger.v1";
 const LAST_SENT_KEY = "leaderboard.lastSentTotal";
 const LAST_SENT_AT_KEY = "leaderboard.lastSentAt";
+const LEGACY_MIGRATION_SUBMITTED_KEY = "leaderboard.legacyMigrationSubmitted";
 const ANONYMOUS_NAME_KEY = "leaderboard.anonymousName";
 const LEADERBOARD_ENDPOINT = "https://vscodecodextracker.itfinesse.co.uk/api.php";
 const LEADERBOARD_MIN_SUBMIT_MS = 60_000;
@@ -81,41 +84,116 @@ async function checkLeaderboardName(context, value) {
     return { available: response.available === true, message: String(response.message ?? "Name check failed.") };
 }
 async function submitLeaderboardUsage(context, prompts, log) {
-    const ledger = updateLedger(context, prompts);
+    const hasLegacyLedger = Boolean(context.globalState.get(LEGACY_LEDGER_KEY));
+    const updated = updateLedger(context, prompts);
+    const ledger = updated.ledger;
     const settings = await readLeaderboardSettings(context);
     const lastTotal = context.globalState.get(LAST_SENT_KEY, 0);
     const lastPromptCount = context.globalState.get("leaderboard.lastSentPromptCount", 0);
     const lastSentAt = context.globalState.get(LAST_SENT_AT_KEY, 0);
-    if (!settings.enabled || ledger.total < 1_000 || (ledger.total <= lastTotal && ledger.promptCount <= lastPromptCount) || Date.now() - lastSentAt < LEADERBOARD_MIN_SUBMIT_MS)
+    const migrationSyncPending = hasLegacyLedger && context.globalState.get(LEGACY_MIGRATION_SUBMITTED_KEY) !== true;
+    if (updated.migrated || migrationSyncPending) {
+        log.info(`Ledger | source=leaderboard.inputLedger.v1 | task=migration | action=start | v2Tokens=${ledger.total}; prompts=${ledger.promptCount}.`);
+    }
+    const unchanged = ledger.total <= lastTotal && ledger.promptCount <= lastPromptCount;
+    const skipReason = !settings.enabled ? "disabled" : ledger.total < 1_000 ? "below-1,000-token minimum" : !migrationSyncPending && unchanged ? "token and prompt totals unchanged" : !migrationSyncPending && Date.now() - lastSentAt < LEADERBOARD_MIN_SUBMIT_MS ? "submission throttle active" : undefined;
+    if (skipReason) {
+        log.info(`Leaderboard | source=usage-ledger | task=submission | action=skip | reason=${skipReason}; tokens=${ledger.total}; prompts=${ledger.promptCount}; estimatedSpend=$${ledger.estimatedSpend.toFixed(6)}.`);
         return undefined;
+    }
     let deviceId = context.globalState.get(DEVICE_KEY);
     if (!deviceId) {
         deviceId = (0, node_crypto_1.randomBytes)(18).toString("base64url");
         await context.globalState.update(DEVICE_KEY, deviceId);
     }
     try {
+        log.info(`Leaderboard | source=usage-ledger | task=submission | action=start | reason=${migrationSyncPending ? "legacy-migration-sync" : "usage-increase"}; tokens=${ledger.total}; prompts=${ledger.promptCount}.`);
         const response = await request(LEADERBOARD_ENDPOINT, { action: "submit", name: settings.name, code: settings.code, device_id: deviceId, input_tokens_total: ledger.total, prompt_count_total: ledger.promptCount, estimated_spend_total: Number(ledger.estimatedSpend.toFixed(6)) });
         if (response.ok !== true)
             throw new Error(String(response.message ?? "Leaderboard rejected the submission."));
         const position = Number(response.position ?? response.rank);
         if (Number.isInteger(position) && position > 0)
             await context.globalState.update("leaderboard.position", position);
-        await Promise.all([context.globalState.update(LAST_SENT_KEY, ledger.total), context.globalState.update("leaderboard.lastSentPromptCount", ledger.promptCount), context.globalState.update(LAST_SENT_AT_KEY, Date.now())]);
-        log.info(`Leaderboard: submitted ${ledger.total.toLocaleString()} input tokens and $${ledger.estimatedSpend.toFixed(2)} estimated API-equivalent spend.`);
+        await Promise.all([context.globalState.update(LAST_SENT_KEY, ledger.total), context.globalState.update("leaderboard.lastSentPromptCount", ledger.promptCount), context.globalState.update(LAST_SENT_AT_KEY, Date.now()), ...(migrationSyncPending ? [context.globalState.update(LEGACY_MIGRATION_SUBMITTED_KEY, true)] : [])]);
+        log.info(`Leaderboard | source=usage-ledger | task=submission | action=complete | result=success; tokens=${ledger.total.toLocaleString()}; prompts=${ledger.promptCount}; estimatedSpend=$${ledger.estimatedSpend.toFixed(2)}; position=${Number.isInteger(position) && position > 0 ? position : "unavailable"}.`);
+        if (migrationSyncPending) {
+            log.info(`Ledger | source=leaderboard.inputLedger.v1 | task=migration | action=complete | result=submitted; tokens=${ledger.total}; prompts=${ledger.promptCount}.`);
+        }
         return Number.isInteger(position) && position > 0 ? position : undefined;
     }
     catch (error) {
-        log.warn(`Leaderboard: submission failed; it will retry after the next token increase. ${error instanceof Error ? error.message : String(error)}`);
+        log.warn(`Leaderboard | source=usage-ledger | task=submission | action=complete | result=failed; retry=next-token-increase; reason=${error instanceof Error ? error.message : String(error)}.`);
     }
 }
-function updateLedger(context, prompts) {
+function readUsageLedger(context) {
     const stored = context.globalState.get(LEDGER_KEY);
-    const ledger = stored && isObject(stored.prompts) && Number.isFinite(stored.total) ? { total: stored.total, estimatedSpend: Number.isFinite(stored.estimatedSpend) ? stored.estimatedSpend : 0, promptCount: Number.isFinite(stored.promptCount) ? stored.promptCount : Object.keys(stored.prompts).length, prompts: stored.prompts } : { total: 0, estimatedSpend: 0, promptCount: 0, prompts: {} };
-    let changed = false;
+    const legacy = context.globalState.get(LEGACY_LEDGER_KEY);
+    const storedValid = stored && isObject(stored.prompts) && Number.isFinite(stored.total);
+    const legacyValid = legacy && isObject(legacy.prompts) && Number.isFinite(legacy.total);
+    if (storedValid) {
+        const ledger = {
+            total: stored.total,
+            estimatedSpend: Number.isFinite(stored.estimatedSpend) ? stored.estimatedSpend : 0,
+            promptCount: Number.isFinite(stored.promptCount) ? stored.promptCount : Object.keys(stored.prompts).length,
+            prompts: stored.prompts
+        };
+        let migrated = false;
+        if (legacyValid) {
+            for (const [key, input] of Object.entries(legacy.prompts)) {
+                const legacyInput = Math.max(0, Math.floor(Number(input) || 0));
+                const current = ledger.prompts[key];
+                if (!current || legacyInput > current.input) {
+                    ledger.prompts[key] = { input: legacyInput, spend: current?.spend ?? 0 };
+                    migrated = true;
+                }
+            }
+            if (legacy.total > ledger.total) {
+                ledger.total = Math.floor(legacy.total);
+                migrated = true;
+            }
+            const legacyPromptCount = Number.isFinite(legacy.promptCount) ? Math.floor(legacy.promptCount) : Object.keys(legacy.prompts).length;
+            if (legacyPromptCount > ledger.promptCount) {
+                ledger.promptCount = legacyPromptCount;
+                migrated = true;
+            }
+        }
+        return { ledger, migrated };
+    }
+    if (legacyValid) {
+        const prompts = {};
+        for (const [key, input] of Object.entries(legacy.prompts)) {
+            prompts[key] = { input: Math.max(0, Math.floor(Number(input) || 0)), spend: 0 };
+        }
+        return {
+            ledger: {
+                total: Math.max(0, Math.floor(legacy.total)),
+                estimatedSpend: 0,
+                promptCount: Number.isFinite(legacy.promptCount) ? Math.max(0, Math.floor(legacy.promptCount)) : Object.keys(prompts).length,
+                prompts
+            },
+            migrated: true
+        };
+    }
+    return { ledger: { total: 0, estimatedSpend: 0, promptCount: 0, prompts: {} }, migrated: false };
+}
+function updateLedger(context, prompts) {
+    const loaded = readUsageLedger(context);
+    const ledger = loaded.ledger;
+    let changed = loaded.migrated;
+    const lastSentTotal = context.globalState.get(LAST_SENT_KEY, 0);
+    const lastSentPromptCount = context.globalState.get("leaderboard.lastSentPromptCount", 0);
+    if (lastSentTotal > ledger.total) {
+        ledger.total = lastSentTotal;
+        changed = true;
+    }
+    if (lastSentPromptCount > ledger.promptCount) {
+        ledger.promptCount = lastSentPromptCount;
+        changed = true;
+    }
     for (const prompt of prompts) {
         const input = Math.max(0, Math.floor(prompt.inputTokens ?? 0));
         const spend = Math.max(0, Number(prompt.estimatedCost ?? 0));
-        const key = `${prompt.session}|${prompt.timestamp.getTime()}`;
+        const key = prompt.session + "|" + prompt.timestamp.getTime();
         const previous = ledger.prompts[key] ?? { input: 0, spend: 0 };
         if (!(key in ledger.prompts)) {
             ledger.promptCount += 1;
@@ -135,7 +213,39 @@ function updateLedger(context, prompts) {
     }
     if (changed)
         void context.globalState.update(LEDGER_KEY, ledger);
-    return ledger;
+    return { ledger, migrated: loaded.migrated };
+}
+function validateLedgerHistory(context, prompts) {
+    const { ledger, migrated } = readUsageLedger(context);
+    if (migrated)
+        void context.globalState.update(LEDGER_KEY, ledger);
+    const history = new Map(prompts.map((prompt) => [prompt.session + "|" + prompt.timestamp.getTime(), Math.max(0, Math.floor(prompt.inputTokens ?? 0))]));
+    let matchedPrompts = 0;
+    let missingPrompts = 0;
+    let mismatchedPrompts = 0;
+    let historyTokens = 0;
+    let ledgerPromptTokens = 0;
+    for (const [key, value] of Object.entries(ledger.prompts)) {
+        ledgerPromptTokens += value.input;
+        const input = history.get(key);
+        if (input === undefined) {
+            missingPrompts += 1;
+            continue;
+        }
+        matchedPrompts += 1;
+        historyTokens += input;
+        if (input !== value.input)
+            mismatchedPrompts += 1;
+    }
+    return {
+        valid: missingPrompts === 0 && mismatchedPrompts === 0 && ledger.total === ledgerPromptTokens,
+        checkedAt: new Date(),
+        matchedPrompts,
+        missingPrompts,
+        mismatchedPrompts,
+        ledgerTokens: ledger.total,
+        historyTokens
+    };
 }
 function normalizeName(value) {
     const name = typeof value === "string" ? value.trim().replace(/\s+/g, " ") : "Anonymous";
