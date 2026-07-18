@@ -2,7 +2,7 @@
   "name": "vscode-codex-tracker",
   "displayName": "VSCode Codex Tracker",
   "description": "Shows Codex rolling-window usage and local prompt token history.",
-  "version": "1.3.5",
+  "version": "1.3.6",
   "publisher": "ITFinesse",
   "icon": "resources/icon.png",
   "repository": {
