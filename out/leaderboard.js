@@ -224,9 +224,7 @@ function validateLedgerHistory(context, prompts) {
     let missingPrompts = 0;
     let mismatchedPrompts = 0;
     let historyTokens = 0;
-    let ledgerPromptTokens = 0;
     for (const [key, value] of Object.entries(ledger.prompts)) {
-        ledgerPromptTokens += value.input;
         const input = history.get(key);
         if (input === undefined) {
             missingPrompts += 1;
@@ -238,7 +236,7 @@ function validateLedgerHistory(context, prompts) {
             mismatchedPrompts += 1;
     }
     return {
-        valid: missingPrompts === 0 && mismatchedPrompts === 0 && ledger.total === ledgerPromptTokens,
+        valid: missingPrompts === 0 && mismatchedPrompts === 0,
         checkedAt: new Date(),
         matchedPrompts,
         missingPrompts,

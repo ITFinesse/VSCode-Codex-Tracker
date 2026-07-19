@@ -391,6 +391,7 @@ export const dashboardClient = String.raw`    const vscode = acquireVsCodeApi();
       render();
     };
     $('refreshModelPrices').onclick = () => { $('refreshModelPrices').disabled = true; $('refreshModelPrices').textContent = 'Refreshing prices…'; vscode.postMessage({ command: 'refreshModelPrices' }); };
+    $('revalidateLedger').onclick = () => { $('revalidateLedger').disabled = true; $('revalidateLedger').textContent = 'Revalidating ledger…'; vscode.postMessage({ command: 'revalidateLedger' }); };
     $('leaderboardButton').onclick = () => {
       const popup = $('leaderboardPopup');
       popup.hidden = false;
@@ -462,6 +463,7 @@ export const dashboardClient = String.raw`    const vscode = acquireVsCodeApi();
         return;
       }
       if (data.type === 'pricesRefreshed') { $('refreshModelPrices').disabled = false; $('refreshModelPrices').textContent = data.success ? 'Model prices refreshed' : 'Refresh model prices'; return; }
+      if (data.type === 'ledgerRevalidated') { $('revalidateLedger').disabled = false; $('revalidateLedger').textContent = data.success ? 'Ledger revalidated' : 'Revalidate ledger'; return; }
       if (data.type !== 'snapshot') return;
       snapshot = data.snapshot;
       nextRefreshAt = snapshot.nextRefreshAt;

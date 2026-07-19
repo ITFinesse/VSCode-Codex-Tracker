@@ -107,39 +107,45 @@ function activate(context) {
     let initialRefreshScheduled = false;
     let ledgerValidationTimer;
     let ledgerValidationRunning = false;
+    const validateLedger = async () => {
+        if (!snapshotCache || ledgerValidationRunning)
+            return false;
+        ledgerValidationRunning = true;
+        try {
+            const files = await newestJsonlFiles(snapshotCache.sessionPath, Number.MAX_SAFE_INTEGER);
+            debugLog(`Ledger | source=codex-session-history | task=validation | action=start | files=${files.length}; ledgerScope=existing-ledger-prompts.`);
+            const history = [];
+            for (const file of files)
+                history.push(...(await readSession(file)));
+            const validation = (0, leaderboard_1.validateLedgerHistory)(context, history);
+            snapshotCache = { ...snapshotCache, ledgerValidation: validation };
+            await saveUsageCache(context, snapshotCache);
+            if (webviewReady)
+                postSnapshot(snapshotCache);
+            const result = validation.valid ? "valid" : "mismatch";
+            const message = `Ledger | source=codex-session-history | task=validation | action=complete | result=${result}; matched=${validation.matchedPrompts}; missing=${validation.missingPrompts}; mismatched=${validation.mismatchedPrompts}; ledgerTokens=${validation.ledgerTokens}; historyTokens=${validation.historyTokens}.`;
+            if (validation.valid) {
+                debugLog(message);
+            }
+            else {
+                debugWarn(message);
+            }
+            return true;
+        }
+        catch (error) {
+            debugWarn(`Ledger | source=codex-session-history | task=validation | action=complete | result=failed; reason=${error instanceof Error ? error.message : String(error)}.`);
+            return false;
+        }
+        finally {
+            ledgerValidationRunning = false;
+        }
+    };
     const scheduleLedgerValidation = () => {
-        if (ledgerValidationTimer)
-            clearTimeout(ledgerValidationTimer);
-        ledgerValidationTimer = setTimeout(async () => {
-            if (!snapshotCache || ledgerValidationRunning)
-                return;
-            ledgerValidationRunning = true;
-            try {
-                const files = await newestJsonlFiles(snapshotCache.sessionPath, Number.MAX_SAFE_INTEGER);
-                debugLog(`Ledger | source=codex-session-history | task=validation | action=start | files=${files.length}; ledgerScope=existing-ledger-prompts.`);
-                const history = [];
-                for (const file of files)
-                    history.push(...(await readSession(file)));
-                const validation = (0, leaderboard_1.validateLedgerHistory)(context, history);
-                snapshotCache = { ...snapshotCache, ledgerValidation: validation };
-                await saveUsageCache(context, snapshotCache);
-                if (webviewReady)
-                    postSnapshot(snapshotCache);
-                const result = validation.valid ? "valid" : "mismatch";
-                const message = `Ledger | source=codex-session-history | task=validation | action=complete | result=${result}; matched=${validation.matchedPrompts}; missing=${validation.missingPrompts}; mismatched=${validation.mismatchedPrompts}; ledgerTokens=${validation.ledgerTokens}; historyTokens=${validation.historyTokens}.`;
-                if (validation.valid) {
-                    debugLog(message);
-                }
-                else {
-                    debugWarn(message);
-                }
-            }
-            catch (error) {
-                debugWarn(`Ledger | source=codex-session-history | task=validation | action=complete | result=failed; reason=${error instanceof Error ? error.message : String(error)}.`);
-            }
-            finally {
-                ledgerValidationRunning = false;
-            }
+        if (ledgerValidationTimer || ledgerValidationRunning)
+            return;
+        ledgerValidationTimer = setTimeout(() => {
+            ledgerValidationTimer = undefined;
+            void validateLedger();
         }, 120_000);
     };
     const refresh = async (changedFile) => {
@@ -240,6 +246,9 @@ function activate(context) {
                     debugLog("Pricing: manual model-price refresh requested.");
                     void refreshModelPricing(context, cachePath).then((success) => view.webview.postMessage({ type: "pricesRefreshed", success }), (error) => { debugLog(`Pricing: manual refresh failed: ${error instanceof Error ? error.message : String(error)}`); view.webview.postMessage({ type: "pricesRefreshed", success: false }); });
                 }
+                else if (message.command === "revalidateLedger") {
+                    void validateLedger().then((success) => view.webview.postMessage({ type: "ledgerRevalidated", success }));
+                }
                 else if (message.command === "saveLeaderboard") {
                     void (0, leaderboard_1.saveLeaderboardSettings)(context, message.leaderboard)
                         .then(() => (0, leaderboard_1.readLeaderboardSettings)(context))
@@ -296,15 +305,14 @@ function activate(context) {
             clearTimeout(sessionChangeTimer); if (ledgerValidationTimer)
             clearTimeout(ledgerValidationTimer); sessionWatcher?.close(); } });
     void loadUsageCache(context).then((cached) => {
-        if (!cached) {
-            scheduleInitialRefresh();
-            return;
+        if (cached) {
+            snapshotCache = cached;
+            updateStatusBar(cached);
+            void ensureModelPricing(context).then(() => { if (snapshotCache && webviewReady)
+                postSnapshot(snapshotCache); });
+            scheduleLedgerValidation();
         }
-        snapshotCache = cached;
-        updateStatusBar(cached);
-        void ensureModelPricing(context).then(() => { if (snapshotCache && webviewReady)
-            postSnapshot(snapshotCache); });
-        scheduleLedgerValidation();
+        void refresh();
     });
     context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((event) => {
         if (event.affectsConfiguration("codexUsage.sessionsPath")) {

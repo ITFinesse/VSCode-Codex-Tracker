@@ -33,6 +33,7 @@ exports.dashboardMarkup = String.raw `  <header class="topbar">
       </div>
       <label class="debug-toggle"><input id="outputDebug" type="checkbox"><span>Output Debug</span></label>
       <button id="refreshModelPrices" type="button">Refresh model prices</button>
+      <button id="revalidateLedger" type="button">Revalidate ledger</button>
       <div class="visibility">
         <label><input id="showSpend" type="checkbox"> Spend chart</label><label><input id="showMetrics" type="checkbox"> Metric charts</label><label><input id="showModels" type="checkbox"> Model chart</label><label><input id="showTokens" type="checkbox"> Tokens chart</label><label><input id="showPrompts" type="checkbox"> Prompt usage</label>
       </div>
