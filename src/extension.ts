@@ -116,6 +116,7 @@ export function activate(context: vscode.ExtensionContext): void {
   let refreshInFlight = false;
   let refreshQueued = false;
   let initialRefreshScheduled = false;
+  let refreshTimer: NodeJS.Timeout | undefined;
   let ledgerValidationTimer: NodeJS.Timeout | undefined;
   let ledgerValidationRunning = false;
   let initialLedgerValidationPending = true;
@@ -173,6 +174,16 @@ export function activate(context: vscode.ExtensionContext): void {
     }
     void validateLedger().then(() => submitUsage(snapshot));
   };
+  const refreshIntervalMs = (): number =>
+    Math.max(10, Math.min(3600, vscode.workspace.getConfiguration("codexUsage").get<number>("refreshIntervalSeconds", 60))) * 1_000;
+  const scheduleNextRefresh = (): void => {
+    if (refreshTimer) clearTimeout(refreshTimer);
+    if (nextRefreshAt <= Date.now()) nextRefreshAt = Date.now() + refreshIntervalMs();
+    refreshTimer = setTimeout(() => {
+      refreshTimer = undefined;
+      void refresh();
+    }, Math.max(1_000, nextRefreshAt - Date.now()));
+  };
   const refresh = async (changedFile?: string): Promise<void> => {
     if (refreshInFlight) {
       if (!refreshQueued) {
@@ -182,6 +193,10 @@ export function activate(context: vscode.ExtensionContext): void {
       return;
     }
     refreshInFlight = true;
+    if (refreshTimer) {
+      clearTimeout(refreshTimer);
+      refreshTimer = undefined;
+    }
     {
       refreshQueued = false;
       debugLog("Refresh started.");
@@ -189,7 +204,7 @@ export function activate(context: vscode.ExtensionContext): void {
         await ensureModelPricing(context);
         const snapshot = await collectUsage(changedFile);
         snapshotCache = snapshot;
-        nextRefreshAt = 0;
+        nextRefreshAt = Date.now() + refreshIntervalMs();
         updateStatusBar(snapshot);
         await saveUsageCache(context, snapshot);
         if (webviewReady) {
@@ -218,8 +233,15 @@ export function activate(context: vscode.ExtensionContext): void {
         }
       }
     }
+    const runQueuedRefresh = refreshQueued;
     refreshQueued = false;
     refreshInFlight = false;
+    if (runQueuedRefresh) {
+      debugLog("Running queued follow-up refresh.");
+      void refresh();
+    } else {
+      scheduleNextRefresh();
+    }
   };
   const scheduleInitialRefresh = (): void => {
     if (initialRefreshScheduled) {
@@ -325,7 +347,7 @@ export function activate(context: vscode.ExtensionContext): void {
     } catch (error) { debugWarn(`Watcher: unavailable for ${sessionPath}: ${error instanceof Error ? error.message : String(error)}`); }
   };
   watchSessions();
-  context.subscriptions.push({ dispose: () => { if (sessionChangeTimer) clearTimeout(sessionChangeTimer); if (ledgerValidationTimer) clearTimeout(ledgerValidationTimer); sessionWatcher?.close(); } });
+  context.subscriptions.push({ dispose: () => { if (sessionChangeTimer) clearTimeout(sessionChangeTimer); if (refreshTimer) clearTimeout(refreshTimer); if (ledgerValidationTimer) clearTimeout(ledgerValidationTimer); sessionWatcher?.close(); } });
   void loadUsageCache(context).then((cached) => {
     if (cached) {
       snapshotCache = cached;

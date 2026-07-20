@@ -259,6 +259,7 @@ export const dashboardClient = String.raw`    const vscode = acquireVsCodeApi();
 
     function render() {
       if (!snapshot) return;
+      const scrollPosition = { left: window.scrollX, top: window.scrollY };
 
       destroyCharts();
       setDateFormat(snapshot.locale, snapshot.timeZone);
@@ -425,6 +426,8 @@ export const dashboardClient = String.raw`    const vscode = acquireVsCodeApi();
       bindCards();
       bindPromptColumns();
       bindTips();
+      window.scrollTo(scrollPosition.left, scrollPosition.top);
+      requestAnimationFrame(() => window.scrollTo(scrollPosition.left, scrollPosition.top));
     }
 
     document.querySelectorAll('.range').forEach(button => {

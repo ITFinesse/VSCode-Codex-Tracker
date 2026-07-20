@@ -110,6 +110,7 @@ function activate(context) {
     let refreshInFlight = false;
     let refreshQueued = false;
     let initialRefreshScheduled = false;
+    let refreshTimer;
     let ledgerValidationTimer;
     let ledgerValidationRunning = false;
     let initialLedgerValidationPending = true;
@@ -175,6 +176,17 @@ function activate(context) {
         }
         void validateLedger().then(() => submitUsage(snapshot));
     };
+    const refreshIntervalMs = () => Math.max(10, Math.min(3600, vscode.workspace.getConfiguration("codexUsage").get("refreshIntervalSeconds", 60))) * 1_000;
+    const scheduleNextRefresh = () => {
+        if (refreshTimer)
+            clearTimeout(refreshTimer);
+        if (nextRefreshAt <= Date.now())
+            nextRefreshAt = Date.now() + refreshIntervalMs();
+        refreshTimer = setTimeout(() => {
+            refreshTimer = undefined;
+            void refresh();
+        }, Math.max(1_000, nextRefreshAt - Date.now()));
+    };
     const refresh = async (changedFile) => {
         if (refreshInFlight) {
             if (!refreshQueued) {
@@ -184,6 +196,10 @@ function activate(context) {
             return;
         }
         refreshInFlight = true;
+        if (refreshTimer) {
+            clearTimeout(refreshTimer);
+            refreshTimer = undefined;
+        }
         {
             refreshQueued = false;
             debugLog("Refresh started.");
@@ -191,7 +207,7 @@ function activate(context) {
                 await ensureModelPricing(context);
                 const snapshot = await collectUsage(changedFile);
                 snapshotCache = snapshot;
-                nextRefreshAt = 0;
+                nextRefreshAt = Date.now() + refreshIntervalMs();
                 updateStatusBar(snapshot);
                 await saveUsageCache(context, snapshot);
                 if (webviewReady) {
@@ -222,8 +238,16 @@ function activate(context) {
                 }
             }
         }
+        const runQueuedRefresh = refreshQueued;
         refreshQueued = false;
         refreshInFlight = false;
+        if (runQueuedRefresh) {
+            debugLog("Running queued follow-up refresh.");
+            void refresh();
+        }
+        else {
+            scheduleNextRefresh();
+        }
     };
     const scheduleInitialRefresh = () => {
         if (initialRefreshScheduled) {
@@ -335,7 +359,8 @@ function activate(context) {
     };
     watchSessions();
     context.subscriptions.push({ dispose: () => { if (sessionChangeTimer)
-            clearTimeout(sessionChangeTimer); if (ledgerValidationTimer)
+            clearTimeout(sessionChangeTimer); if (refreshTimer)
+            clearTimeout(refreshTimer); if (ledgerValidationTimer)
             clearTimeout(ledgerValidationTimer); sessionWatcher?.close(); } });
     void loadUsageCache(context).then((cached) => {
         if (cached) {
