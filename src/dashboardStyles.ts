@@ -30,13 +30,11 @@ export const dashboardStyles = String.raw`    :root{
     .icon-button{width:34px;height:34px;border:1px solid var(--border);border-radius:5px;background:var(--surface2);color:var(--text);cursor:pointer}
     .account-meta{margin:-10px 0 14px;color:var(--muted);text-align:center}
     .panel,.metric{border:1px solid var(--border);border-radius:7px;background:linear-gradient(180deg,color-mix(in srgb,var(--surface2) 42%,var(--surface)),var(--surface))}
-    [data-card]{position:relative;resize:both;overflow:auto;min-width:180px;min-height:fit-content}
-    #content{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;align-items:start}
-    #content>.metrics,#content>.lower{display:contents}
-    #content>.spend-panel,#content>.token-panel,#content>.table-panel{grid-column:1/-1}
+    [data-card]{position:relative;grid-column:span var(--card-span,4);width:auto;resize:both;overflow:auto;min-width:0;min-height:120px}
+    #content{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));grid-auto-flow:row;gap:14px;align-items:start}
     [data-card]::after{content:'↘';position:absolute;right:6px;bottom:3px;color:var(--muted);font-size:11px;pointer-events:none}
     [data-card].dragging{opacity:.55;outline:1px dashed var(--accent)}
-    .spend-panel{display:grid;grid-template-columns:minmax(155px,180px) minmax(0,1fr);gap:12px;padding:18px;margin-bottom:12px}
+    .spend-panel{display:grid;grid-template-columns:minmax(155px,180px) minmax(0,1fr);gap:12px;padding:18px}
     .eyebrow{display:flex;gap:6px;align-items:center;font-size:14px}
     .info{width:15px;height:15px;padding:0;border:1px solid var(--muted);border-radius:50%;background:transparent;color:var(--muted);font-size:9px;cursor:pointer}
     .big-value{font-size:32px;line-height:1.1;margin:18px 0 14px;font-variant-numeric:tabular-nums}
@@ -44,11 +42,11 @@ export const dashboardStyles = String.raw`    :root{
     .trend span{display:block;color:var(--muted)}
     .chart-wrap{position:relative;width:100%;height:220px;min-width:0}
     .chart-wrap canvas{display:block;width:100%!important;height:100%!important}
-    .metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:14px}
+    #content>.panel:not(.spend-panel):not(.table-panel){padding:16px}
     .metric{padding:16px 17px 10px}
     .metric-value{font-size:19px;margin:5px 0 4px;font-variant-numeric:tabular-nums}
     .metric .chart-wrap{height:45px;margin-top:7px}
-    .lower{display:grid;grid-template-columns:minmax(220px,.8fr) minmax(220px,.8fr) minmax(420px,1.4fr);gap:14px;margin-bottom:14px}
+    [data-card="model"]{align-self:stretch}
     .lower>.panel,.token-panel{padding:16px}
     .panel-title{font-size:17px;font-weight:700;margin:0 0 10px}
     .model-chart{height:190px}
@@ -68,6 +66,7 @@ export const dashboardStyles = String.raw`    :root{
     th,td{padding:9px 14px;border-bottom:1px solid var(--border);text-align:left}
     th{color:var(--muted);font-size:11px;font-weight:500}
     th.resizable{resize:horizontal;overflow:hidden;min-width:64px}
+    th[data-prompt-column]{cursor:grab;user-select:none}th[data-prompt-column]::before{content:'⋮⋮';margin-right:6px;color:var(--accent);letter-spacing:-3px}th.dragging-column{opacity:.45;outline:1px dashed var(--accent)}
     th[data-col=date]{width:150px}
     th[data-col=task]{width:150px}
     th[data-col=prompt]{width:350px}
@@ -100,6 +99,6 @@ export const dashboardStyles = String.raw`    :root{
     .leaderboard-popup iframe{display:block;width:100%;height:calc(100% - 92px);border:1px solid var(--border);background:var(--surface)}
     .leaderboard-popup button,.leaderboard-links a{padding:5px 10px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--text);cursor:pointer;text-decoration:none}
     .leaderboard-links{display:flex;gap:8px;margin-top:10px}
-    @media(max-width:900px){.topbar{flex-wrap:wrap}.top-actions{width:100%;justify-content:flex-end}.spend-panel,.lower{grid-template-columns:1fr}.metrics{grid-template-columns:1fr 1fr}.settings{top:auto;bottom:auto}}
-    @media(max-width:900px){#content{grid-template-columns:repeat(2,minmax(0,1fr))}}
-    @media(max-width:540px){body{padding:14px}.metrics{grid-template-columns:1fr}.updated{display:none}.settings{left:14px;right:14px;width:auto}#content{grid-template-columns:1fr}}`;
+    @media(max-width:900px){.topbar{flex-wrap:wrap}.top-actions{width:100%;justify-content:flex-end}.settings{top:auto;bottom:auto}}
+    @media(max-width:900px){.spend-panel{grid-template-columns:1fr}}
+    @media(max-width:540px){body{padding:14px}.updated{display:none}.settings{left:14px;right:14px;width:auto}[data-card]{grid-column:1/-1;resize:vertical}}`;

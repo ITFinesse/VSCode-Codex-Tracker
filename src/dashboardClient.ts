@@ -11,6 +11,12 @@ export const dashboardClient = String.raw`    const vscode = acquireVsCodeApi();
     let lastUpdated = '';
     let leaderboard = { enabled: false, name: 'Anonymous', code: '' };
     let cardLayout = viewState.cardLayout && typeof viewState.cardLayout === 'object' ? viewState.cardLayout : {};
+    const storedCardOrder = Array.isArray(viewState.cardOrder) ? viewState.cardOrder : Object.values(cardLayout).flat();
+    let cardOrder = [...new Set(storedCardOrder.filter(id => typeof id === 'string'))];
+    const promptColumnKeys = ['date', 'task', 'prompt', 'agent', 'input', 'output', 'cached', 'cost'];
+    const storedPromptColumnOrder = Array.isArray(viewState.promptColumnOrder) ? viewState.promptColumnOrder : [];
+    let promptColumnOrder = [...new Set(storedPromptColumnOrder.filter(key => promptColumnKeys.includes(key)))];
+    promptColumnOrder.push(...promptColumnKeys.filter(key => !promptColumnOrder.includes(key)));
     const defaultVisibility = { showSpend: true, showMetrics: true, showModels: true, showTokens: true, showPrompts: true };
     let visibility = defaultVisibility;
     try {
@@ -146,50 +152,108 @@ export const dashboardClient = String.raw`    const vscode = acquireVsCodeApi();
       };
     }
 
-    const cardId = card => {
-      if (card.dataset.card) return card.dataset.card;
-      if (card.classList.contains('spend-panel')) return 'spend';
-      if (card.classList.contains('metric')) return 'metric-' + [...card.parentElement.children].indexOf(card);
-      if (card.classList.contains('table-panel')) return 'table';
-      const title = card.querySelector('h2')?.textContent || '';
-      return title.includes('Model') ? 'model' : title.includes('Prompts') ? 'prompts' : 'tokens';
-    };
     const bindCards = () => {
-      const cards = [...document.querySelectorAll('.spend-panel,.metric,.token-panel,.lower>.panel,.table-panel')];
+      const content = $('content');
+      const cards = [...content.querySelectorAll(':scope > [data-card]')];
+      const cardById = new Map(cards.map(card => [card.dataset.card, card]));
+      cardOrder.forEach(id => {
+        const card = cardById.get(id);
+        if (card) content.appendChild(card);
+      });
+      const saveOrder = () => {
+        cardOrder = [...content.querySelectorAll(':scope > [data-card]')].map(card => card.dataset.card);
+        const state = { ...vscode.getState(), cardOrder };
+        delete state.cardLayout;
+        vscode.setState(state);
+      };
       cards.forEach(card => {
-        const id = cardId(card);
-        card.dataset.card = id;
+        const id = card.dataset.card;
         card.draggable = true;
         const size = vscode.getState()?.cardSizes?.[id];
+        const span = Math.max(1, Math.min(12, Number(size?.span || card.dataset.defaultSpan || 4)));
+        card.style.setProperty('--card-span', String(span));
         if (size?.height) card.style.height = size.height + 'px';
-        card.ondragstart = () => { card.classList.add('dragging'); };
-        card.ondragend = () => { card.classList.remove('dragging'); };
-        card.ondragover = event => event.preventDefault();
-        card.ondrop = event => {
-          event.preventDefault();
-          const dragging = document.querySelector('.dragging');
-          if (!dragging || dragging === card) return;
-          const fromParent = dragging.parentElement;
-          const toParent = card.parentElement;
-          toParent.insertBefore(dragging, card);
-          [fromParent, toParent].forEach(parent => {
-            cardLayout[parent.id || parent.className] = [...parent.children].map(item => item.dataset.card).filter(Boolean);
-          });
-          vscode.setState({ ...vscode.getState(), cardLayout });
+        card.ondragstart = event => {
+          if (event.target !== card) return;
+          card.classList.add('dragging');
+          event.dataTransfer.effectAllowed = 'move';
+          event.dataTransfer.setData('text/x-dashboard-card', id);
         };
-        card.onpointerup = () => {
+        card.ondragend = () => { card.classList.remove('dragging'); };
+        card.ondragover = event => {
+          if (document.querySelector('[data-prompt-column].dragging-column')) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = 'move';
+        };
+        card.ondrop = event => {
+          const dragging = content.querySelector(':scope > .dragging');
+          if (!dragging || dragging === card) return;
+          event.preventDefault();
+          event.stopPropagation();
+          const rect = card.getBoundingClientRect();
+          const after = event.clientY > rect.top + rect.height / 2
+            || (event.clientY >= rect.top && event.clientY <= rect.bottom && event.clientX > rect.left + rect.width / 2);
+          content.insertBefore(dragging, after ? card.nextSibling : card);
+          saveOrder();
+        };
+        card.onpointerup = event => {
+          if (event.target.closest('button,input,select,a,th')) return;
+          const styles = getComputedStyle(content);
+          const gap = parseFloat(styles.columnGap) || 0;
+          const columnWidth = (content.clientWidth - gap * 11) / 12;
+          const resizedSpan = Math.max(1, Math.min(12, Math.round((card.getBoundingClientRect().width + gap) / (columnWidth + gap))));
           const cardSizes = { ...(vscode.getState()?.cardSizes || {}) };
-          cardSizes[id] = { height: card.offsetHeight };
+          cardSizes[id] = { height: card.offsetHeight, span: resizedSpan };
+          card.style.width = '';
+          card.style.setProperty('--card-span', String(resizedSpan));
           vscode.setState({ ...vscode.getState(), cardSizes });
+          charts.forEach(chart => chart.resize());
         };
       });
-      Object.entries(cardLayout).forEach(([parentKey, order]) => {
-        const parent = parentKey === 'content' ? $('content') : document.querySelector('.' + parentKey);
-        if (!parent || !Array.isArray(order)) return;
-        order.forEach(id => {
-          const item = cards.find(child => child.dataset.card === id);
-          if (item) parent.appendChild(item);
-        });
+      content.ondragover = event => {
+        if (content.querySelector(':scope > .dragging')) event.preventDefault();
+      };
+      content.ondrop = event => {
+        const dragging = content.querySelector(':scope > .dragging');
+        if (!dragging || event.target.closest('[data-card]')) return;
+        event.preventDefault();
+        content.appendChild(dragging);
+        saveOrder();
+      };
+    };
+    const bindPromptColumns = () => {
+      const headers = [...document.querySelectorAll('[data-prompt-column]')];
+      headers.forEach(header => {
+        header.ondragstart = event => {
+          event.stopPropagation();
+          header.classList.add('dragging-column');
+          event.dataTransfer.effectAllowed = 'move';
+          event.dataTransfer.setData('text/x-prompt-column', header.dataset.col);
+        };
+        header.ondragend = event => {
+          event.stopPropagation();
+          header.classList.remove('dragging-column');
+        };
+        header.ondragover = event => {
+          event.preventDefault();
+          event.stopPropagation();
+          event.dataTransfer.dropEffect = 'move';
+        };
+        header.ondrop = event => {
+          event.preventDefault();
+          event.stopPropagation();
+          const dragging = document.querySelector('[data-prompt-column].dragging-column');
+          if (!dragging || dragging === header) return;
+          const sourceKey = dragging.dataset.col;
+          const targetKey = header.dataset.col;
+          const nextOrder = promptColumnOrder.filter(key => key !== sourceKey);
+          const targetIndex = nextOrder.indexOf(targetKey);
+          const rect = header.getBoundingClientRect();
+          nextOrder.splice(targetIndex + (event.clientX > rect.left + rect.width / 2 ? 1 : 0), 0, sourceKey);
+          promptColumnOrder = nextOrder;
+          vscode.setState({ ...vscode.getState(), promptColumnOrder });
+          render();
+        };
       });
     };
 
@@ -224,7 +288,7 @@ export const dashboardClient = String.raw`    const vscode = acquireVsCodeApi();
         cost: acc.cost + (p.cost || 0),
         requests: acc.requests + 1
       }), { input: 0, output: 0, cached: 0, cost: 0, requests: 0 });
-      const metric = (name, value, key, color, info) => '<article class="metric" data-card="metric-' + key + '" draggable="true"><div class="eyebrow">' + name + ' <button class="info" data-info="' + info + '">i</button></div><div class="metric-value">' + value + '</div>' + canvas('metric-' + key, 45, name + ' trend') + '</article>';
+      const metric = (name, value, key, color, info) => '<article class="metric" data-card="metric-' + key + '" data-default-span="4" draggable="true"><div class="eyebrow">' + name + ' <button class="info" data-info="' + info + '">i</button></div><div class="metric-value">' + value + '</div>' + canvas('metric-' + key, 45, name + ' trend') + '</article>';
       const group = models(prompts);
       $('fiveHour').textContent = snapshot.fiveHour.remaining;
       $('fiveReset').textContent = 'Reset ' + snapshot.fiveHour.reset;
@@ -249,36 +313,42 @@ export const dashboardClient = String.raw`    const vscode = acquireVsCodeApi();
       if (sortMode === 'agent') sorted.sort((a, b) => String(b.model || '').localeCompare(String(a.model || ''), undefined, { numeric: true }));
       if (sortMode === 'tokens') sorted.sort((a, b) => (b.inputTokens + b.outputTokens + b.cachedTokens) - (a.inputTokens + a.outputTokens + a.cachedTokens));
 
-      const rows = sorted.map((p, i) =>
-        '<tr data-row><td>' + esc(p.timestamp) + '</td><td class="session-cell" title="' + esc(p.session) + '">' + esc(p.sessionTitle || p.session) + '</td><td class="prompt-cell"><div class="prompt-row"><span class="prompt-text">' + esc(p.text) + '</span><button class="expand" data-expand="' + i + '">Expand</button></div><div class="prompt-full" hidden>' + esc(p.text) + '</div></td><td>' + esc(p.model || 'Codex') + '</td><td class="num">' + number(p.inputTokens) + '</td><td class="num">' + number(p.outputTokens) + '</td><td class="num">' + number(p.cachedTokens) + '</td><td class="num">' + money(p.cost, 4) + '</td></tr>'
-      ).join('');
+      const columnHeaders = { date: 'Date / Time', task: 'Task', prompt: 'Prompt', agent: 'Agent', input: 'Input Tokens', output: 'Output Tokens', cached: 'Cached Tokens', cost: 'Cost' };
+      const numericColumns = new Set(['input', 'output', 'cached', 'cost']);
+      const promptCell = (p, i, key) => {
+        if (key === 'date') return '<td data-col="date" class="date-cell">' + esc(p.timestamp) + '</td>';
+        if (key === 'task') return '<td data-col="task" class="session-cell" title="' + esc(p.session) + '">' + esc(p.sessionTitle || p.session) + '</td>';
+        if (key === 'prompt') return '<td data-col="prompt" class="prompt-cell"><div class="prompt-row"><span class="prompt-text">' + esc(p.text) + '</span><button class="expand" data-expand="' + i + '">Expand</button></div><div class="prompt-full" hidden>' + esc(p.text) + '</div></td>';
+        if (key === 'agent') return '<td data-col="agent">' + esc(p.model || 'Codex') + '</td>';
+        if (key === 'input') return '<td data-col="input" class="num">' + number(p.inputTokens) + '</td>';
+        if (key === 'output') return '<td data-col="output" class="num">' + number(p.outputTokens) + '</td>';
+        if (key === 'cached') return '<td data-col="cached" class="num">' + number(p.cachedTokens) + '</td>';
+        return '<td data-col="cost" class="num">' + money(p.cost, 4) + '</td>';
+      };
+      const columnHeadersHtml = promptColumnOrder.map(key => '<th class="resizable' + (numericColumns.has(key) ? ' num' : '') + '" data-col="' + key + '" data-prompt-column draggable="true">' + columnHeaders[key] + '</th>').join('');
+      const rows = sorted.map((p, i) => '<tr data-row>' + promptColumnOrder.map(key => promptCell(p, i, key)).join('') + '</tr>').join('');
 
       $('content').innerHTML =
         (visibility.showSpend
-          ? '<section class="panel spend-panel"><div><div class="eyebrow">Total Spend <button class="info" data-info="Estimated prompt spend across the selected period.">i</button></div><div class="big-value">' + money(totals.cost) + '</div><div class="trend">Current range <span>per-point timestamps</span></div></div><div>' + canvas('spend-chart', 220, 'Spend over time') + '</div></section>'
+          ? '<section class="panel spend-panel" data-card="spend" data-default-span="12"><div><div class="eyebrow">Total Spend <button class="info" data-info="Estimated prompt spend across the selected period.">i</button></div><div class="big-value">' + money(totals.cost) + '</div><div class="trend">Current range <span>per-point timestamps</span></div></div><div>' + canvas('spend-chart', 220, 'Spend over time') + '</div></section>'
           : '') +
         (visibility.showTokens
-          ? '<section class="panel token-panel"><h2 class="panel-title">Tokens Over Time <button class="info" data-info="Input and cached tokens use the left axis; output uses the right axis.">i</button></h2>' + canvas('tokens-chart', 260, 'Input, output, and cached tokens over time') + '</section>'
+          ? '<section class="panel token-panel" data-card="tokens" data-default-span="12"><h2 class="panel-title">Tokens Over Time <button class="info" data-info="Input and cached tokens use the left axis; output uses the right axis.">i</button></h2>' + canvas('tokens-chart', 260, 'Input, output, and cached tokens over time') + '</section>'
           : '') +
         (visibility.showMetrics
-          ? '<section class="metrics">'
-             + metric('Input Tokens', number(totals.input), 'input', palette[2], 'Tokens sent to Codex. The sparkline uses per-point timestamps.')
-             + metric('Output Tokens', number(totals.output), 'output', palette[1], 'Tokens returned by Codex. The sparkline uses per-point timestamps.')
-             + metric('Cached Tokens', number(totals.cached), 'cached', palette[0], 'Cached input tokens recorded by Codex. The sparkline uses per-point timestamps.')
-             + '</section>'
+          ? metric('Input Tokens', number(totals.input), 'input', palette[2], 'Tokens sent to Codex. The sparkline uses per-point timestamps.')
+            + metric('Output Tokens', number(totals.output), 'output', palette[1], 'Tokens returned by Codex. The sparkline uses per-point timestamps.')
+            + metric('Cached Tokens', number(totals.cached), 'cached', palette[0], 'Cached input tokens recorded by Codex. The sparkline uses per-point timestamps.')
           : '') +
-        ((visibility.showModels || visibility.showPrompts)
-          ? '<section class="lower">'
-            + (visibility.showModels
-               ? '<article class="panel"><h2 class="panel-title">Usage by Model &amp; Cost</h2><div class="model-chart">' + canvas('model-chart', 190, 'Usage by model and cost') + '</div><div class="model-list">' + group.map((g, i) => '<div class="model-row" data-model-index="' + i + '" role="button" tabindex="0" title="Toggle ' + esc(g.name) + '"><i class="swatch" style="background:' + palette[i % palette.length] + '"></i><span>' + esc(g.name) + '</span><span>' + money(g.cost) + '</span><span class="pct">' + (totals.cost ? (g.cost / totals.cost * 100).toFixed(1) : '0.0') + '%</span></div>').join('') + '</div></article><article class="panel"><h2 class="panel-title">Average tokens per prompt</h2>' + canvas('efficiency-chart', 170, 'Average input and output tokens per prompt by model') + '</article>'
-              : '')
-             + (visibility.showPrompts
-               ? '<article class="panel"><h2 class="panel-title">Prompts <button class="info" data-info="Number of prompts sent each day in the selected period.">i</button></h2>' + canvas('prompts-chart', 170, 'Prompts over time') + '</article>'
-               : '')
-            + '</section>'
+        (visibility.showModels
+          ? '<article class="panel" data-card="model" data-default-span="3"><h2 class="panel-title">Usage by Model &amp; Cost</h2><div class="model-chart">' + canvas('model-chart', 190, 'Usage by model and cost') + '</div><div class="model-list">' + group.map((g, i) => '<div class="model-row" data-model-index="' + i + '" role="button" tabindex="0" title="Toggle ' + esc(g.name) + '"><i class="swatch" style="background:' + palette[i % palette.length] + '"></i><span>' + esc(g.name) + '</span><span>' + money(g.cost) + '</span><span class="pct">' + (totals.cost ? (g.cost / totals.cost * 100).toFixed(1) : '0.0') + '%</span></div>').join('') + '</div></article>'
+            + '<article class="panel" data-card="efficiency" data-default-span="3"><h2 class="panel-title">Average tokens per prompt</h2>' + canvas('efficiency-chart', 170, 'Average input and output tokens per prompt by model') + '</article>'
           : '') +
         (visibility.showPrompts
-          ? '<section class="panel table-panel"><div class="table-head"><h2>Prompt Usage</h2><input id="search" class="search" type="search" placeholder="Search prompts…"><button class="sort ' + (sortMode === 'latest' ? 'active' : '') + '" data-sort="latest">Latest</button><button class="sort ' + (sortMode === 'agent' ? 'active' : '') + '" data-sort="agent">Agent</button><button class="sort ' + (sortMode === 'tokens' ? 'active' : '') + '" data-sort="tokens">Tokens ↓</button><label class="row-count">Rows <select id="rowCount"><option>4</option><option>10</option><option>25</option><option>100</option></select></label></div><div id="tableScroll" class="table-scroll"><table><thead><tr><th class="resizable" data-col="date">Date / Time</th><th class="resizable" data-col="task">Task</th><th class="resizable" data-col="prompt">Prompt</th><th class="resizable" data-col="agent">Agent</th><th class="resizable num">Input Tokens</th><th class="resizable num">Output Tokens</th><th class="resizable num">Cached Tokens</th><th class="resizable num">Cost</th></tr></thead><tbody>' + (rows || '<tr><td colspan="8" class="empty">No prompts in this range</td></tr>') + '</tbody></table></div></section>'
+          ? '<article class="panel" data-card="prompts" data-default-span="6"><h2 class="panel-title">Prompts <button class="info" data-info="Number of prompts sent each day in the selected period.">i</button></h2>' + canvas('prompts-chart', 170, 'Prompts over time') + '</article>'
+          : '') +
+        (visibility.showPrompts
+          ? '<section class="panel table-panel" data-card="table" data-default-span="12"><div class="table-head"><h2>Prompt Usage</h2><input id="search" class="search" type="search" placeholder="Search prompts…"><button class="sort ' + (sortMode === 'latest' ? 'active' : '') + '" data-sort="latest">Latest</button><button class="sort ' + (sortMode === 'agent' ? 'active' : '') + '" data-sort="agent">Agent</button><button class="sort ' + (sortMode === 'tokens' ? 'active' : '') + '" data-sort="tokens">Tokens ↓</button><label class="row-count">Rows <select id="rowCount"><option>4</option><option>10</option><option>25</option><option>100</option></select></label></div><div id="tableScroll" class="table-scroll"><table><thead><tr>' + columnHeadersHtml + '</tr></thead><tbody>' + (rows || '<tr><td colspan="8" class="empty">No prompts in this range</td></tr>') + '</tbody></table></div></section>'
           : '');
       const noMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
        if ($('spend-chart')) { const options = commonOptions('Spend over time', false, timeLabels(points)); const theme = chartTheme(); options.scales.y.display = false; options.scales.yCost = { position: 'right', beginAtZero: true, ticks: { color: theme.text, callback: value => money(value, 2) }, title: { display: true, text: 'Estimated cost (USD)', color: theme.text }, grid: { drawOnChartArea: true, color: theme.grid + '66' }, border: { display: false } }; buildChart('spend-chart', { type: 'line', data: { labels: timeLabels(points), datasets: [lineDataset('Spend', points, 'cost', palette[0], true, 'yCost', false, 'money')] }, options }); }
@@ -353,6 +423,7 @@ export const dashboardClient = String.raw`    const vscode = acquireVsCodeApi();
       }
 
       bindCards();
+      bindPromptColumns();
       bindTips();
     }
 
@@ -384,9 +455,13 @@ export const dashboardClient = String.raw`    const vscode = acquireVsCodeApi();
     window.addEventListener('resize', () => { if (!settingsPanel.hidden) positionSettings(); });
     $('resetLayout').onclick = () => {
       cardLayout = {};
+      cardOrder = [];
+      promptColumnOrder = [...promptColumnKeys];
       const state = { ...vscode.getState() };
       delete state.cardLayout;
       delete state.cardSizes;
+      delete state.cardOrder;
+      delete state.promptColumnOrder;
       vscode.setState(state);
       render();
     };
