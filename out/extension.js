@@ -78,6 +78,11 @@ const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
 const LITELLM_MODELS_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
 const USAGE_CACHE_FILE = "usage-cache.json";
 const USAGE_CACHE_SECRET = "usage-cache.hmac-key";
+const LEADERBOARD_EXTERNAL_URLS = new Set([
+    "https://github.com/ITFinesse?tab=repositories",
+    "https://marketplace.visualstudio.com/manage/publishers/itfinesse",
+    "https://donate.stripe.com/7sY14q4DM6f81dC69Y8bS00"
+]);
 function activate(context) {
     extensionVersion = `V:${String(context.extension.packageJSON.version ?? "—")}`;
     try {
@@ -256,6 +261,14 @@ function activate(context) {
                     }
                     else {
                         scheduleInitialRefresh();
+                    }
+                }
+                else if (message.command === "openExternal") {
+                    if (typeof message.url === "string" && LEADERBOARD_EXTERNAL_URLS.has(message.url)) {
+                        void vscode.env.openExternal(vscode.Uri.parse(message.url));
+                    }
+                    else {
+                        debugWarn("Webview: rejected unapproved external URL.");
                     }
                 }
                 else if (message.command === "saveAppearance") {

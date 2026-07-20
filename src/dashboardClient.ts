@@ -392,6 +392,10 @@ export const dashboardClient = String.raw`    const vscode = acquireVsCodeApi();
     };
     $('refreshModelPrices').onclick = () => { $('refreshModelPrices').disabled = true; $('refreshModelPrices').textContent = 'Refreshing prices…'; vscode.postMessage({ command: 'refreshModelPrices' }); };
     $('revalidateLedger').onclick = () => { $('revalidateLedger').disabled = true; $('revalidateLedger').textContent = 'Revalidating ledger…'; vscode.postMessage({ command: 'revalidateLedger' }); };
+    document.querySelectorAll('.leaderboard-links a').forEach(link => link.addEventListener('click', event => {
+      event.preventDefault();
+      vscode.postMessage({ command: 'openExternal', url: link.href });
+    }));
     $('leaderboardButton').onclick = () => {
       const popup = $('leaderboardPopup');
       popup.hidden = false;
@@ -452,6 +456,12 @@ export const dashboardClient = String.raw`    const vscode = acquireVsCodeApi();
     window.onerror = (message, source, line, column, error) => vscode.postMessage({ command: 'webviewError', error: [message, source, line, column, error?.stack].filter(Boolean).join(' | ') });
     window.addEventListener('message', event => {
       const data = event.data;
+      if (data?.type === 'openExternal') {
+        if (event.origin === 'https://vscodecodextracker.itfinesse.co.uk' && typeof data.url === 'string') {
+          vscode.postMessage({ command: 'openExternal', url: data.url });
+        }
+        return;
+      }
       if (data.type === 'error') {
         $('content').textContent = data.message;
         return;
