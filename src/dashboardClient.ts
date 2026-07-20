@@ -7,7 +7,6 @@ export const dashboardClient = String.raw`    const vscode = acquireVsCodeApi();
     let rangeDays = [0, 1, 7, 30, 90].includes(storedRangeDays) ? storedRangeDays : 1;
     let visibleRows = 4;
     let sortMode = 'latest';
-    let nextRefreshAt = 0;
     let lastUpdated = '';
     let leaderboard = { enabled: false, name: 'Anonymous', code: '' };
     let cardLayout = viewState.cardLayout && typeof viewState.cardLayout === 'object' ? viewState.cardLayout : {};
@@ -35,11 +34,7 @@ export const dashboardClient = String.raw`    const vscode = acquireVsCodeApi();
     const money = (v, d = 2) => '$' + Number(v || 0).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
     const updateLabel = () => {
       if (!snapshot) return;
-      const seconds = Math.max(0, Math.ceil((nextRefreshAt - Date.now()) / 1000));
-      const remaining = seconds > 0
-        ? seconds >= 60 ? Math.floor(seconds / 60) + 'm ' + String(seconds % 60).padStart(2, '0') + 's' : seconds + 's'
-        : 'Refreshing…';
-      $('updated').textContent = (seconds > 0 ? 'Update in: ' : '') + remaining + ', Last: ' + lastUpdated;
+      $('updated').textContent = 'Last: ' + lastUpdated;
     };
     const filtered = ps => rangeDays ? ps.filter(p => p.time >= Date.now() - rangeDays * 86400000) : ps;
     const timeline = ps => [...ps].sort((a, b) => a.time - b.time);
@@ -170,7 +165,8 @@ export const dashboardClient = String.raw`    const vscode = acquireVsCodeApi();
         const id = card.dataset.card;
         card.draggable = true;
         const size = vscode.getState()?.cardSizes?.[id];
-        const span = Math.max(1, Math.min(12, Number(size?.span || card.dataset.defaultSpan || 4)));
+        const minSpan = Math.max(1, Math.min(12, Number(card.dataset.minSpan || 1)));
+        const span = Math.max(minSpan, Math.min(12, Number(size?.span || card.dataset.defaultSpan || 4)));
         card.style.setProperty('--card-span', String(span));
         if (size?.height) card.style.height = size.height + 'px';
         card.ondragstart = event => {
@@ -201,7 +197,7 @@ export const dashboardClient = String.raw`    const vscode = acquireVsCodeApi();
           const styles = getComputedStyle(content);
           const gap = parseFloat(styles.columnGap) || 0;
           const columnWidth = (content.clientWidth - gap * 11) / 12;
-          const resizedSpan = Math.max(1, Math.min(12, Math.round((card.getBoundingClientRect().width + gap) / (columnWidth + gap))));
+          const resizedSpan = Math.max(minSpan, Math.min(12, Math.round((card.getBoundingClientRect().width + gap) / (columnWidth + gap))));
           const cardSizes = { ...(vscode.getState()?.cardSizes || {}) };
           cardSizes[id] = { height: card.offsetHeight, span: resizedSpan };
           card.style.width = '';
@@ -289,7 +285,7 @@ export const dashboardClient = String.raw`    const vscode = acquireVsCodeApi();
         cost: acc.cost + (p.cost || 0),
         requests: acc.requests + 1
       }), { input: 0, output: 0, cached: 0, cost: 0, requests: 0 });
-      const metric = (name, value, key, color, info) => '<article class="metric" data-card="metric-' + key + '" data-default-span="4" draggable="true"><div class="eyebrow">' + name + ' <button class="info" data-info="' + info + '">i</button></div><div class="metric-value">' + value + '</div>' + canvas('metric-' + key, 45, name + ' trend') + '</article>';
+      const metric = (name, value, key, color, info) => '<article class="metric" data-card="metric-' + key + '" data-default-span="4" data-min-span="2" draggable="true"><div class="eyebrow">' + name + ' <button class="info" data-info="' + info + '">i</button></div><div class="metric-value">' + value + '</div>' + canvas('metric-' + key, 45, name + ' trend') + '</article>';
       const group = models(prompts);
       $('fiveHour').textContent = snapshot.fiveHour.remaining;
       $('fiveReset').textContent = 'Reset ' + snapshot.fiveHour.reset;
@@ -331,10 +327,10 @@ export const dashboardClient = String.raw`    const vscode = acquireVsCodeApi();
 
       $('content').innerHTML =
         (visibility.showSpend
-          ? '<section class="panel spend-panel" data-card="spend" data-default-span="12"><div><div class="eyebrow">Total Spend <button class="info" data-info="Estimated prompt spend across the selected period.">i</button></div><div class="big-value">' + money(totals.cost) + '</div><div class="trend">Current range <span>per-point timestamps</span></div></div><div>' + canvas('spend-chart', 220, 'Spend over time') + '</div></section>'
+          ? '<section class="panel spend-panel" data-card="spend" data-default-span="12" data-min-span="6"><div><div class="eyebrow">Total Spend <button class="info" data-info="Estimated prompt spend across the selected period.">i</button></div><div class="big-value">' + money(totals.cost) + '</div><div class="trend">Current range <span>per-point timestamps</span></div></div><div>' + canvas('spend-chart', 220, 'Spend over time') + '</div></section>'
           : '') +
         (visibility.showTokens
-          ? '<section class="panel token-panel" data-card="tokens" data-default-span="12"><h2 class="panel-title">Tokens Over Time <button class="info" data-info="Input and cached tokens use the left axis; output uses the right axis.">i</button></h2>' + canvas('tokens-chart', 260, 'Input, output, and cached tokens over time') + '</section>'
+          ? '<section class="panel token-panel" data-card="tokens" data-default-span="12" data-min-span="6"><h2 class="panel-title">Tokens Over Time <button class="info" data-info="Input and cached tokens use the left axis; output uses the right axis.">i</button></h2>' + canvas('tokens-chart', 260, 'Input, output, and cached tokens over time') + '</section>'
           : '') +
         (visibility.showMetrics
           ? metric('Input Tokens', number(totals.input), 'input', palette[2], 'Tokens sent to Codex. The sparkline uses per-point timestamps.')
@@ -342,14 +338,14 @@ export const dashboardClient = String.raw`    const vscode = acquireVsCodeApi();
             + metric('Cached Tokens', number(totals.cached), 'cached', palette[0], 'Cached input tokens recorded by Codex. The sparkline uses per-point timestamps.')
           : '') +
         (visibility.showModels
-          ? '<article class="panel" data-card="model" data-default-span="3"><h2 class="panel-title">Usage by Model &amp; Cost</h2><div class="model-chart">' + canvas('model-chart', 190, 'Usage by model and cost') + '</div><div class="model-list">' + group.map((g, i) => '<div class="model-row" data-model-index="' + i + '" role="button" tabindex="0" title="Toggle ' + esc(g.name) + '"><i class="swatch" style="background:' + palette[i % palette.length] + '"></i><span>' + esc(g.name) + '</span><span>' + money(g.cost) + '</span><span class="pct">' + (totals.cost ? (g.cost / totals.cost * 100).toFixed(1) : '0.0') + '%</span></div>').join('') + '</div></article>'
-            + '<article class="panel" data-card="efficiency" data-default-span="3"><h2 class="panel-title">Average tokens per prompt</h2>' + canvas('efficiency-chart', 170, 'Average input and output tokens per prompt by model') + '</article>'
+          ? '<article class="panel" data-card="model" data-default-span="4" data-min-span="4"><h2 class="panel-title">Usage by Model &amp; Cost</h2><div class="model-chart">' + canvas('model-chart', 190, 'Usage by model and cost') + '</div><div class="model-list">' + group.map((g, i) => '<div class="model-row" data-model-index="' + i + '" role="button" tabindex="0" title="Toggle ' + esc(g.name) + '"><i class="swatch" style="background:' + palette[i % palette.length] + '"></i><span>' + esc(g.name) + '</span><span>' + money(g.cost) + '</span><span class="pct">' + (totals.cost ? (g.cost / totals.cost * 100).toFixed(1) : '0.0') + '%</span></div>').join('') + '</div></article>'
+            + '<article class="panel" data-card="efficiency" data-default-span="4" data-min-span="4"><h2 class="panel-title">Average tokens per prompt</h2>' + canvas('efficiency-chart', 170, 'Average input and output tokens per prompt by model') + '</article>'
           : '') +
         (visibility.showPrompts
-          ? '<article class="panel" data-card="prompts" data-default-span="6"><h2 class="panel-title">Prompts <button class="info" data-info="Number of prompts sent each day in the selected period.">i</button></h2>' + canvas('prompts-chart', 170, 'Prompts over time') + '</article>'
+          ? '<article class="panel" data-card="prompts" data-default-span="4" data-min-span="4"><h2 class="panel-title">Prompts <button class="info" data-info="Number of prompts sent each day in the selected period.">i</button></h2>' + canvas('prompts-chart', 170, 'Prompts over time') + '</article>'
           : '') +
         (visibility.showPrompts
-          ? '<section class="panel table-panel" data-card="table" data-default-span="12"><div class="table-head"><h2>Prompt Usage</h2><input id="search" class="search" type="search" placeholder="Search prompts…"><button class="sort ' + (sortMode === 'latest' ? 'active' : '') + '" data-sort="latest">Latest</button><button class="sort ' + (sortMode === 'agent' ? 'active' : '') + '" data-sort="agent">Agent</button><button class="sort ' + (sortMode === 'tokens' ? 'active' : '') + '" data-sort="tokens">Tokens ↓</button><label class="row-count">Rows <select id="rowCount"><option>4</option><option>10</option><option>25</option><option>100</option></select></label></div><div id="tableScroll" class="table-scroll"><table><thead><tr>' + columnHeadersHtml + '</tr></thead><tbody>' + (rows || '<tr><td colspan="8" class="empty">No prompts in this range</td></tr>') + '</tbody></table></div></section>'
+          ? '<section class="panel table-panel" data-card="table" data-default-span="12" data-min-span="6"><div class="table-head"><h2>Prompt Usage</h2><input id="search" class="search" type="search" placeholder="Search prompts…"><button class="sort ' + (sortMode === 'latest' ? 'active' : '') + '" data-sort="latest">Latest</button><button class="sort ' + (sortMode === 'agent' ? 'active' : '') + '" data-sort="agent">Agent</button><button class="sort ' + (sortMode === 'tokens' ? 'active' : '') + '" data-sort="tokens">Tokens ↓</button><label class="row-count">Rows <select id="rowCount"><option>4</option><option>10</option><option>25</option><option>100</option></select></label></div><div id="tableScroll" class="table-scroll"><table><thead><tr>' + columnHeadersHtml + '</tr></thead><tbody>' + (rows || '<tr><td colspan="8" class="empty">No prompts in this range</td></tr>') + '</tbody></table></div></section>'
           : '');
       const noMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
        if ($('spend-chart')) { const options = commonOptions('Spend over time', false, timeLabels(points)); const theme = chartTheme(); options.scales.y.display = false; options.scales.yCost = { position: 'right', beginAtZero: true, ticks: { color: theme.text, callback: value => money(value, 2) }, title: { display: true, text: 'Estimated cost (USD)', color: theme.text }, grid: { drawOnChartArea: true, color: theme.grid + '66' }, border: { display: false } }; buildChart('spend-chart', { type: 'line', data: { labels: timeLabels(points), datasets: [lineDataset('Spend', points, 'cost', palette[0], true, 'yCost', false, 'money')] }, options }); }
@@ -518,11 +514,6 @@ export const dashboardClient = String.raw`    const vscode = acquireVsCodeApi();
       full.hidden = !full.hidden;
       button.textContent = full.hidden ? 'Expand' : 'Collapse';
     });
-    setInterval(() => {
-      if (!snapshot || document.hidden) return;
-      const seconds = Math.max(0, Math.ceil((nextRefreshAt - Date.now()) / 1000));
-      updateLabel();
-    }, 1000);
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) {
         charts.forEach(chart => chart.stop());
@@ -554,7 +545,6 @@ export const dashboardClient = String.raw`    const vscode = acquireVsCodeApi();
       if (data.type === 'ledgerRevalidated') { $('revalidateLedger').disabled = false; $('revalidateLedger').textContent = data.success ? 'Ledger revalidated' : 'Revalidate ledger'; return; }
       if (data.type !== 'snapshot') return;
       snapshot = data.snapshot;
-      nextRefreshAt = snapshot.nextRefreshAt;
       const metadata = data.metadata ?? snapshot.metadata;
       lastUpdated = metadata?.lastUpdate || snapshot.scannedAt;
       if (metadata) {

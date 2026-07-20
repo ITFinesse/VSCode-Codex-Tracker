@@ -193,7 +193,6 @@ function normalizeAppearanceSettings(value) {
         warningColor: color(appearance.warningColor, "#d97706"),
         criticalColor: color(appearance.criticalColor, "#dc2626"),
         belowFullColor: color(appearance.belowFullColor, "#cccccc"),
-        refreshIntervalSeconds: Math.max(10, Math.min(3600, number(appearance.refreshIntervalSeconds) ?? 60)),
         outputDebug: appearance.outputDebug === true
     };
 }

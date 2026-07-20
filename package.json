@@ -74,13 +74,6 @@
           "default": "",
           "description": "Optional path to the Codex executable. Empty automatically uses the OpenAI VS Code extension's bundled executable, then PATH."
         },
-        "codexUsage.refreshIntervalSeconds": {
-          "type": "number",
-          "default": 60,
-          "minimum": 10,
-          "maximum": 3600,
-          "description": "How often the monitor rereads local Codex session files."
-        },
         "codexUsage.historyLimit": {
           "type": "number",
           "default": 100,

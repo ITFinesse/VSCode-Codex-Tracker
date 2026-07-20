@@ -30,10 +30,13 @@ export const dashboardStyles = String.raw`    :root{
     .icon-button{width:34px;height:34px;border:1px solid var(--border);border-radius:5px;background:var(--surface2);color:var(--text);cursor:pointer}
     .account-meta{margin:-10px 0 14px;color:var(--muted);text-align:center}
     .panel,.metric{border:1px solid var(--border);border-radius:7px;background:linear-gradient(180deg,color-mix(in srgb,var(--surface2) 42%,var(--surface)),var(--surface))}
-    [data-card]{position:relative;grid-column:span var(--card-span,4);width:auto;resize:both;overflow:auto;min-width:0;min-height:120px}
+    [data-card]{position:relative;grid-column:span var(--card-span,4);width:auto;resize:both;overflow:auto;min-width:260px;min-height:220px}
     #content{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));grid-auto-flow:row;gap:14px;align-items:start}
     [data-card]::after{content:'↘';position:absolute;right:6px;bottom:3px;color:var(--muted);font-size:11px;pointer-events:none}
     [data-card].dragging{opacity:.55;outline:1px dashed var(--accent)}
+    [data-card^="metric-"]{min-width:180px;min-height:120px}
+    [data-card="spend"]{min-height:240px}[data-card="tokens"]{min-height:300px}[data-card="model"]{min-height:300px}
+    .table-panel{min-width:0;min-height:160px}
     .spend-panel{display:grid;grid-template-columns:minmax(155px,180px) minmax(0,1fr);gap:12px;padding:18px}
     .eyebrow{display:flex;gap:6px;align-items:center;font-size:14px}
     .info{width:15px;height:15px;padding:0;border:1px solid var(--muted);border-radius:50%;background:transparent;color:var(--muted);font-size:9px;cursor:pointer}
@@ -63,9 +66,9 @@ export const dashboardStyles = String.raw`    :root{
     .row-count select,.settings select,.settings input[type=number]{padding:6px;color:var(--text);background:var(--vscode-input-background);border:1px solid var(--border);border-radius:3px}
     .table-scroll{max-height:186px;overflow:auto}
     table{width:100%;min-width:1020px;table-layout:fixed;border-collapse:collapse}
-    th,td{padding:9px 14px;border-bottom:1px solid var(--border);text-align:left}
+    th,td{padding:5px;border-bottom:1px solid var(--border);text-align:left}
     th{color:var(--muted);font-size:11px;font-weight:500}
-    th.resizable{resize:horizontal;overflow:hidden;min-width:64px}
+    th.resizable{resize:horizontal;overflow:hidden;min-width:40px}
     th[data-prompt-column]{cursor:grab;user-select:none}th[data-prompt-column]::before{content:'⋮⋮';margin-right:6px;color:var(--accent);letter-spacing:-3px}th.dragging-column{opacity:.45;outline:1px dashed var(--accent)}
     th[data-col=date]{width:150px}
     th[data-col=task]{width:150px}
@@ -100,5 +103,5 @@ export const dashboardStyles = String.raw`    :root{
     .leaderboard-popup button,.leaderboard-links a{padding:5px 10px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--text);cursor:pointer;text-decoration:none}
     .leaderboard-links{display:flex;gap:8px;margin-top:10px}
     @media(max-width:900px){.topbar{flex-wrap:wrap}.top-actions{width:100%;justify-content:flex-end}.settings{top:auto;bottom:auto}}
-    @media(max-width:900px){.spend-panel{grid-template-columns:1fr}}
-    @media(max-width:540px){body{padding:14px}.updated{display:none}.settings{left:14px;right:14px;width:auto}[data-card]{grid-column:1/-1;resize:vertical}}`;
+    @media(max-width:900px){.spend-panel{grid-template-columns:1fr}[data-card]{grid-column:span 6}[data-card][data-default-span="12"]{grid-column:1/-1}}
+    @media(max-width:600px){body{padding:14px}.updated{display:none}.settings{left:14px;right:14px;width:auto}[data-card]{grid-column:1/-1;resize:vertical}}`;

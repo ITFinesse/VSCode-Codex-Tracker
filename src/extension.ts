@@ -54,7 +54,6 @@ let statusBarFiveHour: vscode.StatusBarItem;
 let statusBarWeekly: vscode.StatusBarItem;
 let output: vscode.LogOutputChannel;
 let snapshotCache: UsageSnapshot | undefined;
-let nextRefreshAt = 0;
 let displayLocale: string | undefined;
 let displayTimeZone: string | undefined;
 let extensionVersion = "V:—";
@@ -116,7 +115,6 @@ export function activate(context: vscode.ExtensionContext): void {
   let refreshInFlight = false;
   let refreshQueued = false;
   let initialRefreshScheduled = false;
-  let refreshTimer: NodeJS.Timeout | undefined;
   let ledgerValidationTimer: NodeJS.Timeout | undefined;
   let ledgerValidationRunning = false;
   let initialLedgerValidationPending = true;
@@ -174,16 +172,6 @@ export function activate(context: vscode.ExtensionContext): void {
     }
     void validateLedger().then(() => submitUsage(snapshot));
   };
-  const refreshIntervalMs = (): number =>
-    Math.max(10, Math.min(3600, vscode.workspace.getConfiguration("codexUsage").get<number>("refreshIntervalSeconds", 60))) * 1_000;
-  const scheduleNextRefresh = (): void => {
-    if (refreshTimer) clearTimeout(refreshTimer);
-    if (nextRefreshAt <= Date.now()) nextRefreshAt = Date.now() + refreshIntervalMs();
-    refreshTimer = setTimeout(() => {
-      refreshTimer = undefined;
-      void refresh();
-    }, Math.max(1_000, nextRefreshAt - Date.now()));
-  };
   const refresh = async (changedFile?: string): Promise<void> => {
     if (refreshInFlight) {
       if (!refreshQueued) {
@@ -193,10 +181,6 @@ export function activate(context: vscode.ExtensionContext): void {
       return;
     }
     refreshInFlight = true;
-    if (refreshTimer) {
-      clearTimeout(refreshTimer);
-      refreshTimer = undefined;
-    }
     {
       refreshQueued = false;
       debugLog("Refresh started.");
@@ -204,7 +188,6 @@ export function activate(context: vscode.ExtensionContext): void {
         await ensureModelPricing(context);
         const snapshot = await collectUsage(changedFile);
         snapshotCache = snapshot;
-        nextRefreshAt = Date.now() + refreshIntervalMs();
         updateStatusBar(snapshot);
         await saveUsageCache(context, snapshot);
         if (webviewReady) {
@@ -239,8 +222,6 @@ export function activate(context: vscode.ExtensionContext): void {
     if (runQueuedRefresh) {
       debugLog("Running queued follow-up refresh.");
       void refresh();
-    } else {
-      scheduleNextRefresh();
     }
   };
   const scheduleInitialRefresh = (): void => {
@@ -341,13 +322,13 @@ export function activate(context: vscode.ExtensionContext): void {
         if (!relative || !relative.endsWith(".jsonl")) return;
         if (sessionChangeTimer) clearTimeout(sessionChangeTimer);
         const changedFile = path.join(sessionPath, relative);
-        sessionChangeTimer = setTimeout(() => void refresh(changedFile), 5_000);
+        sessionChangeTimer = setTimeout(() => void refresh(changedFile), 1_000);
       });
       debugLog(`Watcher: listening for Codex session changes at ${sessionPath}.`);
     } catch (error) { debugWarn(`Watcher: unavailable for ${sessionPath}: ${error instanceof Error ? error.message : String(error)}`); }
   };
   watchSessions();
-  context.subscriptions.push({ dispose: () => { if (sessionChangeTimer) clearTimeout(sessionChangeTimer); if (refreshTimer) clearTimeout(refreshTimer); if (ledgerValidationTimer) clearTimeout(ledgerValidationTimer); sessionWatcher?.close(); } });
+  context.subscriptions.push({ dispose: () => { if (sessionChangeTimer) clearTimeout(sessionChangeTimer); if (ledgerValidationTimer) clearTimeout(ledgerValidationTimer); sessionWatcher?.close(); } });
   void loadUsageCache(context).then((cached) => {
     if (cached) {
       snapshotCache = cached;
@@ -953,7 +934,6 @@ function postSnapshot(snapshot: UsageSnapshot): void {
         leaderboard: leaderboardForWebview,
         ledgerValidation: snapshot.ledgerValidation ? { ...snapshot.ledgerValidation, checkedAt: snapshot.ledgerValidation.checkedAt.getTime() } : undefined,
         scannedAt: formatDateTime(snapshot.scannedAt),
-        nextRefreshAt,
         metadata: { version: extensionVersion, buildTime: extensionBuildTime, lastUpdate: formatClock(snapshot.scannedAt) }
       }
     })
@@ -1013,7 +993,6 @@ interface AppearanceSettings {
   warningColor: string;
   criticalColor: string;
   belowFullColor: string;
-  refreshIntervalSeconds: number;
   outputDebug: boolean;
 }
 
@@ -1027,7 +1006,6 @@ function readAppearanceSettings(): AppearanceSettings {
     warningColor: validColor(configuration.get<string>("warningColor", "#d97706"), "#d97706"),
     criticalColor: validColor(configuration.get<string>("criticalColor", "#dc2626"), "#dc2626"),
     belowFullColor: validColor(configuration.get<string>("belowFullColor", "#cccccc"), "#cccccc"),
-    refreshIntervalSeconds: Math.max(10, Math.min(3600, configuration.get<number>("refreshIntervalSeconds", 60))),
     outputDebug: configuration.get<boolean>("outputDebug", false)
   };
 }
@@ -1064,7 +1042,6 @@ async function saveAppearanceSettings(value: unknown): Promise<void> {
     configuration.update("warningColor", appearance.warningColor, vscode.ConfigurationTarget.Global),
     configuration.update("criticalColor", appearance.criticalColor, vscode.ConfigurationTarget.Global),
     configuration.update("belowFullColor", appearance.belowFullColor, vscode.ConfigurationTarget.Global),
-    configuration.update("refreshIntervalSeconds", appearance.refreshIntervalSeconds, vscode.ConfigurationTarget.Global),
     configuration.update("outputDebug", appearance.outputDebug, vscode.ConfigurationTarget.Global)
   ]);
 }

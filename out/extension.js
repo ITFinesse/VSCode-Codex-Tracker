@@ -53,7 +53,6 @@ let statusBarFiveHour;
 let statusBarWeekly;
 let output;
 let snapshotCache;
-let nextRefreshAt = 0;
 let displayLocale;
 let displayTimeZone;
 let extensionVersion = "V:—";
@@ -110,7 +109,6 @@ function activate(context) {
     let refreshInFlight = false;
     let refreshQueued = false;
     let initialRefreshScheduled = false;
-    let refreshTimer;
     let ledgerValidationTimer;
     let ledgerValidationRunning = false;
     let initialLedgerValidationPending = true;
@@ -176,17 +174,6 @@ function activate(context) {
         }
         void validateLedger().then(() => submitUsage(snapshot));
     };
-    const refreshIntervalMs = () => Math.max(10, Math.min(3600, vscode.workspace.getConfiguration("codexUsage").get("refreshIntervalSeconds", 60))) * 1_000;
-    const scheduleNextRefresh = () => {
-        if (refreshTimer)
-            clearTimeout(refreshTimer);
-        if (nextRefreshAt <= Date.now())
-            nextRefreshAt = Date.now() + refreshIntervalMs();
-        refreshTimer = setTimeout(() => {
-            refreshTimer = undefined;
-            void refresh();
-        }, Math.max(1_000, nextRefreshAt - Date.now()));
-    };
     const refresh = async (changedFile) => {
         if (refreshInFlight) {
             if (!refreshQueued) {
@@ -196,10 +183,6 @@ function activate(context) {
             return;
         }
         refreshInFlight = true;
-        if (refreshTimer) {
-            clearTimeout(refreshTimer);
-            refreshTimer = undefined;
-        }
         {
             refreshQueued = false;
             debugLog("Refresh started.");
@@ -207,7 +190,6 @@ function activate(context) {
                 await ensureModelPricing(context);
                 const snapshot = await collectUsage(changedFile);
                 snapshotCache = snapshot;
-                nextRefreshAt = Date.now() + refreshIntervalMs();
                 updateStatusBar(snapshot);
                 await saveUsageCache(context, snapshot);
                 if (webviewReady) {
@@ -244,9 +226,6 @@ function activate(context) {
         if (runQueuedRefresh) {
             debugLog("Running queued follow-up refresh.");
             void refresh();
-        }
-        else {
-            scheduleNextRefresh();
         }
     };
     const scheduleInitialRefresh = () => {
@@ -349,7 +328,7 @@ function activate(context) {
                 if (sessionChangeTimer)
                     clearTimeout(sessionChangeTimer);
                 const changedFile = path.join(sessionPath, relative);
-                sessionChangeTimer = setTimeout(() => void refresh(changedFile), 5_000);
+                sessionChangeTimer = setTimeout(() => void refresh(changedFile), 1_000);
             });
             debugLog(`Watcher: listening for Codex session changes at ${sessionPath}.`);
         }
@@ -359,8 +338,7 @@ function activate(context) {
     };
     watchSessions();
     context.subscriptions.push({ dispose: () => { if (sessionChangeTimer)
-            clearTimeout(sessionChangeTimer); if (refreshTimer)
-            clearTimeout(refreshTimer); if (ledgerValidationTimer)
+            clearTimeout(sessionChangeTimer); if (ledgerValidationTimer)
             clearTimeout(ledgerValidationTimer); sessionWatcher?.close(); } });
     void loadUsageCache(context).then((cached) => {
         if (cached) {
@@ -1038,7 +1016,6 @@ function postSnapshot(snapshot) {
             leaderboard: leaderboardForWebview,
             ledgerValidation: snapshot.ledgerValidation ? { ...snapshot.ledgerValidation, checkedAt: snapshot.ledgerValidation.checkedAt.getTime() } : undefined,
             scannedAt: formatDateTime(snapshot.scannedAt),
-            nextRefreshAt,
             metadata: { version: extensionVersion, buildTime: extensionBuildTime, lastUpdate: formatClock(snapshot.scannedAt) }
         }
     })
@@ -1092,7 +1069,6 @@ function readAppearanceSettings() {
         warningColor: validColor(configuration.get("warningColor", "#d97706"), "#d97706"),
         criticalColor: validColor(configuration.get("criticalColor", "#dc2626"), "#dc2626"),
         belowFullColor: validColor(configuration.get("belowFullColor", "#cccccc"), "#cccccc"),
-        refreshIntervalSeconds: Math.max(10, Math.min(3600, configuration.get("refreshIntervalSeconds", 60))),
         outputDebug: configuration.get("outputDebug", false)
     };
 }
@@ -1127,7 +1103,6 @@ async function saveAppearanceSettings(value) {
         configuration.update("warningColor", appearance.warningColor, vscode.ConfigurationTarget.Global),
         configuration.update("criticalColor", appearance.criticalColor, vscode.ConfigurationTarget.Global),
         configuration.update("belowFullColor", appearance.belowFullColor, vscode.ConfigurationTarget.Global),
-        configuration.update("refreshIntervalSeconds", appearance.refreshIntervalSeconds, vscode.ConfigurationTarget.Global),
         configuration.update("outputDebug", appearance.outputDebug, vscode.ConfigurationTarget.Global)
     ]);
 }
