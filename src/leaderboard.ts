@@ -180,7 +180,12 @@ async function updateLedger(context: vscode.ExtensionContext, prompts: PromptUsa
 }
 export async function validateLedgerHistory(context: vscode.ExtensionContext, prompts: PromptUsage[]): Promise<LedgerValidation> {
   const { ledger } = await updateLedger(context, prompts);
-  const history = new Map(prompts.map((prompt) => [promptKey(prompt), Math.max(0, Math.floor(prompt.inputTokens ?? 0))]));
+  const history = new Map<string, number>();
+  for (const prompt of prompts) {
+    const key = promptKey(prompt);
+    const input = Math.max(0, Math.floor(prompt.inputTokens ?? 0));
+    history.set(key, Math.max(history.get(key) ?? 0, input));
+  }
   let matchedPrompts = 0;
   let missingPrompts = 0;
   let mismatchedPrompts = 0;
@@ -193,7 +198,7 @@ export async function validateLedgerHistory(context: vscode.ExtensionContext, pr
     }
     matchedPrompts += 1;
     historyTokens += input;
-    if (input !== value.input) mismatchedPrompts += 1;
+    if (!Number.isFinite(value.input) || input > value.input) mismatchedPrompts += 1;
   }
   return {
     valid: missingPrompts === 0 && mismatchedPrompts === 0,

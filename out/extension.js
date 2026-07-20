@@ -107,6 +107,7 @@ function activate(context) {
     let initialRefreshScheduled = false;
     let ledgerValidationTimer;
     let ledgerValidationRunning = false;
+    let initialLedgerValidationPending = true;
     const validateLedger = async () => {
         if (!snapshotCache || ledgerValidationRunning)
             return false;
@@ -141,12 +142,33 @@ function activate(context) {
         }
     };
     const scheduleLedgerValidation = () => {
-        if (ledgerValidationTimer || ledgerValidationRunning)
-            return;
+        if (ledgerValidationTimer)
+            clearTimeout(ledgerValidationTimer);
         ledgerValidationTimer = setTimeout(() => {
             ledgerValidationTimer = undefined;
+            if (ledgerValidationRunning) {
+                scheduleLedgerValidation();
+                return;
+            }
             void validateLedger();
         }, 120_000);
+    };
+    const submitUsage = (snapshot) => {
+        void (0, leaderboard_1.submitLeaderboardUsage)(context, snapshot.prompts.map((prompt) => ({ ...prompt, estimatedCost: estimateCost(prompt) })), { info: debugLog, warn: debugWarn }).then(async (position) => { if (!position || !snapshotCache)
+            return; leaderboardForWebview = await (0, leaderboard_1.readLeaderboardSettings)(context); postSnapshot(snapshotCache); });
+    };
+    const schedulePostRefreshLedgerWork = (snapshot) => {
+        if (!initialLedgerValidationPending) {
+            submitUsage(snapshot);
+            scheduleLedgerValidation();
+            return;
+        }
+        initialLedgerValidationPending = false;
+        if (ledgerValidationTimer) {
+            clearTimeout(ledgerValidationTimer);
+            ledgerValidationTimer = undefined;
+        }
+        void validateLedger().then(() => submitUsage(snapshot));
     };
     const refresh = async (changedFile) => {
         if (refreshInFlight) {
@@ -173,10 +195,8 @@ function activate(context) {
                 else {
                     debugLog("Webview not ready; cached snapshot will be sent after readiness confirmation.");
                 }
-                void (0, leaderboard_1.submitLeaderboardUsage)(context, snapshot.prompts.map((prompt) => ({ ...prompt, estimatedCost: estimateCost(prompt) })), { info: debugLog, warn: debugWarn }).then(async (position) => { if (!position || !snapshotCache)
-                    return; leaderboardForWebview = await (0, leaderboard_1.readLeaderboardSettings)(context); postSnapshot(snapshotCache); });
                 debugLog(`Usage refreshed from ${snapshot.usageSource}.`);
-                scheduleLedgerValidation();
+                schedulePostRefreshLedgerWork(snapshot);
             }
             catch (error) {
                 const message = error instanceof Error ? error.message : "Could not read Codex usage";
@@ -310,7 +330,6 @@ function activate(context) {
             updateStatusBar(cached);
             void ensureModelPricing(context).then(() => { if (snapshotCache && webviewReady)
                 postSnapshot(snapshotCache); });
-            scheduleLedgerValidation();
         }
         void refresh();
     });

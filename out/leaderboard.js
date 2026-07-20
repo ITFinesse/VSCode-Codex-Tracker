@@ -220,7 +220,12 @@ async function updateLedger(context, prompts) {
 }
 async function validateLedgerHistory(context, prompts) {
     const { ledger } = await updateLedger(context, prompts);
-    const history = new Map(prompts.map((prompt) => [promptKey(prompt), Math.max(0, Math.floor(prompt.inputTokens ?? 0))]));
+    const history = new Map();
+    for (const prompt of prompts) {
+        const key = promptKey(prompt);
+        const input = Math.max(0, Math.floor(prompt.inputTokens ?? 0));
+        history.set(key, Math.max(history.get(key) ?? 0, input));
+    }
     let matchedPrompts = 0;
     let missingPrompts = 0;
     let mismatchedPrompts = 0;
@@ -233,7 +238,7 @@ async function validateLedgerHistory(context, prompts) {
         }
         matchedPrompts += 1;
         historyTokens += input;
-        if (input !== value.input)
+        if (!Number.isFinite(value.input) || input > value.input)
             mismatchedPrompts += 1;
     }
     return {

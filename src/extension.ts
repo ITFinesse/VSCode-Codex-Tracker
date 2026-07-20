@@ -113,6 +113,7 @@ export function activate(context: vscode.ExtensionContext): void {
   let initialRefreshScheduled = false;
   let ledgerValidationTimer: NodeJS.Timeout | undefined;
   let ledgerValidationRunning = false;
+  let initialLedgerValidationPending = true;
   const validateLedger = async (): Promise<boolean> => {
     if (!snapshotCache || ledgerValidationRunning) return false;
     ledgerValidationRunning = true;
@@ -141,11 +142,31 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   };
   const scheduleLedgerValidation = (): void => {
-    if (ledgerValidationTimer || ledgerValidationRunning) return;
+    if (ledgerValidationTimer) clearTimeout(ledgerValidationTimer);
     ledgerValidationTimer = setTimeout(() => {
       ledgerValidationTimer = undefined;
+      if (ledgerValidationRunning) {
+        scheduleLedgerValidation();
+        return;
+      }
       void validateLedger();
     }, 120_000);
+  };
+  const submitUsage = (snapshot: UsageSnapshot): void => {
+    void submitLeaderboardUsage(context, snapshot.prompts.map((prompt) => ({ ...prompt, estimatedCost: estimateCost(prompt) })), { info: debugLog, warn: debugWarn }).then(async (position) => { if (!position || !snapshotCache) return; leaderboardForWebview = await readLeaderboardSettings(context); postSnapshot(snapshotCache); });
+  };
+  const schedulePostRefreshLedgerWork = (snapshot: UsageSnapshot): void => {
+    if (!initialLedgerValidationPending) {
+      submitUsage(snapshot);
+      scheduleLedgerValidation();
+      return;
+    }
+    initialLedgerValidationPending = false;
+    if (ledgerValidationTimer) {
+      clearTimeout(ledgerValidationTimer);
+      ledgerValidationTimer = undefined;
+    }
+    void validateLedger().then(() => submitUsage(snapshot));
   };
   const refresh = async (changedFile?: string): Promise<void> => {
     if (refreshInFlight) {
@@ -171,9 +192,8 @@ export function activate(context: vscode.ExtensionContext): void {
         } else {
           debugLog("Webview not ready; cached snapshot will be sent after readiness confirmation.");
         }
-        void submitLeaderboardUsage(context, snapshot.prompts.map((prompt) => ({ ...prompt, estimatedCost: estimateCost(prompt) })), { info: debugLog, warn: debugWarn }).then(async (position) => { if (!position || !snapshotCache) return; leaderboardForWebview = await readLeaderboardSettings(context); postSnapshot(snapshotCache); });
         debugLog(`Usage refreshed from ${snapshot.usageSource}.`);
-        scheduleLedgerValidation();
+        schedulePostRefreshLedgerWork(snapshot);
       } catch (error) {
         const message = error instanceof Error ? error.message : "Could not read Codex usage";
         debugError(`Refresh failed: ${message}`);
@@ -300,7 +320,6 @@ export function activate(context: vscode.ExtensionContext): void {
       snapshotCache = cached;
       updateStatusBar(cached);
       void ensureModelPricing(context).then(() => { if (snapshotCache && webviewReady) postSnapshot(snapshotCache); });
-      scheduleLedgerValidation();
     }
     void refresh();
   });

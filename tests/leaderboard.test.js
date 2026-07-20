@@ -41,9 +41,7 @@ test("validateLedgerHistory reconciles input growth before validation", async ()
     "leaderboard.usageLedger.v2": stored
   });
 
-  const validation = await validateLedgerHistory(context, [
-    { session: "session-1", timestamp, inputTokens: 150 }
-  ]);
+  const validation = await validateLedgerHistory(context, [{ session: "session-1", timestamp, inputTokens: 150 }]);
 
   assert.equal(validation.valid, true);
   assert.equal(validation.mismatchedPrompts, 0);
@@ -63,11 +61,31 @@ test("validateLedgerHistory preserves a higher monotonic ledger value", async ()
     }
   });
 
+  const validation = await validateLedgerHistory(context, [{ session: "session-1", timestamp, inputTokens: 100 }]);
+
+  assert.equal(validation.valid, true);
+  assert.equal(validation.mismatchedPrompts, 0);
+  assert.equal(validation.ledgerTokens, 150);
+});
+
+test("validateLedgerHistory uses the maximum for duplicate prompt keys", async () => {
+  const timestamp = new Date("2026-07-20T12:00:00.000Z");
+  const key = "session-1|" + timestamp.getTime();
+  const { context } = contextWith({
+    "leaderboard.usageLedger.v2": {
+      total: 150,
+      estimatedSpend: 0,
+      promptCount: 1,
+      prompts: { [key]: { input: 150, spend: 0 } }
+    }
+  });
+
   const validation = await validateLedgerHistory(context, [
+    { session: "session-1", timestamp, inputTokens: 150 },
     { session: "session-1", timestamp, inputTokens: 100 }
   ]);
 
-  assert.equal(validation.valid, false);
-  assert.equal(validation.mismatchedPrompts, 1);
-  assert.equal(validation.ledgerTokens, 150);
+  assert.equal(validation.valid, true);
+  assert.equal(validation.mismatchedPrompts, 0);
+  assert.equal(validation.historyTokens, 150);
 });
