@@ -137,10 +137,10 @@
   },
   "scripts": {
     "compile": "npm run prepare-resources && tsc -p .",
-    "test": "npm run compile && node --test test/*.test.js",
+    "test": "npm run compile && node --test tests/*.test.js",
     "lint": "eslint src",
-    "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.js\" \"*.json\" \"*.md\"",
-    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.js\" \"*.json\" \"*.md\"",
+    "format:check": "prettier --check \"src/**/*.ts\" \"tests/**/*.js\" \"*.json\" \"*.md\"",
+    "format": "prettier --write \"src/**/*.ts\" \"tests/**/*.js\" \"*.json\" \"*.md\"",
     "validate:package": "npm pack --dry-run",
     "audit": "npm audit --omit=dev",
     "verify": "npm run lint && npm run format:check && npm test && npm run validate:package && npm run audit",

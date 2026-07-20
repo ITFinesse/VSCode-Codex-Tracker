@@ -50,7 +50,7 @@ export async function checkLeaderboardName(context: vscode.ExtensionContext, val
 
 export async function submitLeaderboardUsage(context: vscode.ExtensionContext, prompts: PromptUsage[], log: LeaderboardLogger): Promise<number | undefined> {
   const hasLegacyLedger = Boolean(context.globalState.get<LegacyInputLedger>(LEGACY_LEDGER_KEY));
-  const updated = updateLedger(context, prompts);
+  const updated = await updateLedger(context, prompts);
   const ledger = updated.ledger;
   const settings = await readLeaderboardSettings(context);
   const lastTotal = context.globalState.get<number>(LAST_SENT_KEY, 0);
@@ -137,7 +137,7 @@ function readUsageLedger(context: vscode.ExtensionContext): { ledger: UsageLedge
   return { ledger: { total: 0, estimatedSpend: 0, promptCount: 0, prompts: {} }, migrated: false };
 }
 
-function updateLedger(context: vscode.ExtensionContext, prompts: PromptUsage[]): { ledger: UsageLedger; migrated: boolean } {
+async function updateLedger(context: vscode.ExtensionContext, prompts: PromptUsage[]): Promise<{ ledger: UsageLedger; migrated: boolean }> {
   const loaded = readUsageLedger(context);
   const ledger = loaded.ledger;
   let changed = loaded.migrated;
@@ -154,20 +154,33 @@ function updateLedger(context: vscode.ExtensionContext, prompts: PromptUsage[]):
   for (const prompt of prompts) {
     const input = Math.max(0, Math.floor(prompt.inputTokens ?? 0));
     const spend = Math.max(0, Number(prompt.estimatedCost ?? 0));
-    const key = prompt.session + "|" + prompt.timestamp.getTime();
-    const previous = ledger.prompts[key] ?? { input: 0, spend: 0 };
-    if (!(key in ledger.prompts)) { ledger.promptCount += 1; changed = true; }
-    if (input > previous.input) { ledger.total += input - previous.input; previous.input = input; changed = true; }
-    if (spend > previous.spend) { ledger.estimatedSpend += spend - previous.spend; previous.spend = spend; changed = true; }
-    ledger.prompts[key] = previous;
+    const key = promptKey(prompt);
+    const previous = ledger.prompts[key];
+    if (!previous) {
+      ledger.prompts[key] = { input, spend };
+      ledger.promptCount += 1;
+      ledger.total += input;
+      ledger.estimatedSpend += spend;
+      changed = true;
+      continue;
+    }
+    if (input > previous.input) {
+      ledger.total += input - previous.input;
+      previous.input = input;
+      changed = true;
+    }
+    if (spend > previous.spend) {
+      ledger.estimatedSpend += spend - previous.spend;
+      previous.spend = spend;
+      changed = true;
+    }
   }
-  if (changed) void context.globalState.update(LEDGER_KEY, ledger);
+  if (changed) await context.globalState.update(LEDGER_KEY, ledger);
   return { ledger, migrated: loaded.migrated };
 }
-export function validateLedgerHistory(context: vscode.ExtensionContext, prompts: PromptUsage[]): LedgerValidation {
-  const { ledger, migrated } = readUsageLedger(context);
-  if (migrated) void context.globalState.update(LEDGER_KEY, ledger);
-  const history = new Map(prompts.map((prompt) => [prompt.session + "|" + prompt.timestamp.getTime(), Math.max(0, Math.floor(prompt.inputTokens ?? 0))]));
+export async function validateLedgerHistory(context: vscode.ExtensionContext, prompts: PromptUsage[]): Promise<LedgerValidation> {
+  const { ledger } = await updateLedger(context, prompts);
+  const history = new Map(prompts.map((prompt) => [promptKey(prompt), Math.max(0, Math.floor(prompt.inputTokens ?? 0))]));
   let matchedPrompts = 0;
   let missingPrompts = 0;
   let mismatchedPrompts = 0;
@@ -191,6 +204,10 @@ export function validateLedgerHistory(context: vscode.ExtensionContext, prompts:
     ledgerTokens: ledger.total,
     historyTokens
   };
+}
+
+function promptKey(prompt: PromptUsage): string {
+  return prompt.session + "|" + prompt.timestamp.getTime();
 }
 
 function normalizeName(value: unknown): string {

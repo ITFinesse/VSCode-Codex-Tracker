@@ -85,7 +85,7 @@ async function checkLeaderboardName(context, value) {
 }
 async function submitLeaderboardUsage(context, prompts, log) {
     const hasLegacyLedger = Boolean(context.globalState.get(LEGACY_LEDGER_KEY));
-    const updated = updateLedger(context, prompts);
+    const updated = await updateLedger(context, prompts);
     const ledger = updated.ledger;
     const settings = await readLeaderboardSettings(context);
     const lastTotal = context.globalState.get(LAST_SENT_KEY, 0);
@@ -176,7 +176,7 @@ function readUsageLedger(context) {
     }
     return { ledger: { total: 0, estimatedSpend: 0, promptCount: 0, prompts: {} }, migrated: false };
 }
-function updateLedger(context, prompts) {
+async function updateLedger(context, prompts) {
     const loaded = readUsageLedger(context);
     const ledger = loaded.ledger;
     let changed = loaded.migrated;
@@ -193,11 +193,15 @@ function updateLedger(context, prompts) {
     for (const prompt of prompts) {
         const input = Math.max(0, Math.floor(prompt.inputTokens ?? 0));
         const spend = Math.max(0, Number(prompt.estimatedCost ?? 0));
-        const key = prompt.session + "|" + prompt.timestamp.getTime();
-        const previous = ledger.prompts[key] ?? { input: 0, spend: 0 };
-        if (!(key in ledger.prompts)) {
+        const key = promptKey(prompt);
+        const previous = ledger.prompts[key];
+        if (!previous) {
+            ledger.prompts[key] = { input, spend };
             ledger.promptCount += 1;
+            ledger.total += input;
+            ledger.estimatedSpend += spend;
             changed = true;
+            continue;
         }
         if (input > previous.input) {
             ledger.total += input - previous.input;
@@ -209,17 +213,14 @@ function updateLedger(context, prompts) {
             previous.spend = spend;
             changed = true;
         }
-        ledger.prompts[key] = previous;
     }
     if (changed)
-        void context.globalState.update(LEDGER_KEY, ledger);
+        await context.globalState.update(LEDGER_KEY, ledger);
     return { ledger, migrated: loaded.migrated };
 }
-function validateLedgerHistory(context, prompts) {
-    const { ledger, migrated } = readUsageLedger(context);
-    if (migrated)
-        void context.globalState.update(LEDGER_KEY, ledger);
-    const history = new Map(prompts.map((prompt) => [prompt.session + "|" + prompt.timestamp.getTime(), Math.max(0, Math.floor(prompt.inputTokens ?? 0))]));
+async function validateLedgerHistory(context, prompts) {
+    const { ledger } = await updateLedger(context, prompts);
+    const history = new Map(prompts.map((prompt) => [promptKey(prompt), Math.max(0, Math.floor(prompt.inputTokens ?? 0))]));
     let matchedPrompts = 0;
     let missingPrompts = 0;
     let mismatchedPrompts = 0;
@@ -244,6 +245,9 @@ function validateLedgerHistory(context, prompts) {
         ledgerTokens: ledger.total,
         historyTokens
     };
+}
+function promptKey(prompt) {
+    return prompt.session + "|" + prompt.timestamp.getTime();
 }
 function normalizeName(value) {
     const name = typeof value === "string" ? value.trim().replace(/\s+/g, " ") : "Anonymous";

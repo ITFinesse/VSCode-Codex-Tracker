@@ -118,15 +118,15 @@ export function activate(context: vscode.ExtensionContext): void {
     ledgerValidationRunning = true;
     try {
       const files = await newestJsonlFiles(snapshotCache.sessionPath, Number.MAX_SAFE_INTEGER);
-      debugLog(`Ledger | source=codex-session-history | task=validation | action=start | files=${files.length}; ledgerScope=existing-ledger-prompts.`);
+      debugLog(`Ledger | source=codex-session-history | task=reconciliation | action=start | files=${files.length}; ledgerScope=complete-history.`);
       const history: PromptRecord[] = [];
       for (const file of files) history.push(...(await readSession(file)));
-      const validation = validateLedgerHistory(context, history);
+      const validation = await validateLedgerHistory(context, history);
       snapshotCache = { ...snapshotCache, ledgerValidation: validation };
       await saveUsageCache(context, snapshotCache);
       if (webviewReady) postSnapshot(snapshotCache);
       const result = validation.valid ? "valid" : "mismatch";
-      const message = `Ledger | source=codex-session-history | task=validation | action=complete | result=${result}; matched=${validation.matchedPrompts}; missing=${validation.missingPrompts}; mismatched=${validation.mismatchedPrompts}; ledgerTokens=${validation.ledgerTokens}; historyTokens=${validation.historyTokens}.`;
+      const message = `Ledger | source=codex-session-history | task=reconciliation | action=complete | result=${result}; matched=${validation.matchedPrompts}; missing=${validation.missingPrompts}; mismatched=${validation.mismatchedPrompts}; ledgerTokens=${validation.ledgerTokens}; historyTokens=${validation.historyTokens}.`;
       if (validation.valid) {
         debugLog(message);
       } else {
@@ -134,7 +134,7 @@ export function activate(context: vscode.ExtensionContext): void {
       }
       return true;
     } catch (error) {
-      debugWarn(`Ledger | source=codex-session-history | task=validation | action=complete | result=failed; reason=${error instanceof Error ? error.message : String(error)}.`);
+      debugWarn(`Ledger | source=codex-session-history | task=reconciliation | action=complete | result=failed; reason=${error instanceof Error ? error.message : String(error)}.`);
       return false;
     } finally {
       ledgerValidationRunning = false;
