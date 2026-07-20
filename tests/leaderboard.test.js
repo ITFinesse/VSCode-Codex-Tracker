@@ -89,3 +89,23 @@ test("validateLedgerHistory uses the maximum for duplicate prompt keys", async (
   assert.equal(validation.mismatchedPrompts, 0);
   assert.equal(validation.historyTokens, 150);
 });
+
+test("validateLedgerHistory normalizes numeric legacy entries", async () => {
+  const timestamp = new Date("2026-07-20T12:00:00.000Z");
+  const key = "session-1|" + timestamp.getTime();
+  const { context, state } = contextWith({
+    "leaderboard.usageLedger.v2": {
+      total: 100,
+      estimatedSpend: 0,
+      promptCount: 1,
+      prompts: { [key]: 100 }
+    }
+  });
+
+  const validation = await validateLedgerHistory(context, [{ session: "session-1", timestamp, inputTokens: 150 }]);
+
+  assert.equal(validation.valid, true);
+  assert.equal(validation.mismatchedPrompts, 0);
+  assert.equal(validation.ledgerTokens, 150);
+  assert.deepEqual(state.get("leaderboard.usageLedger.v2").prompts[key], { input: 150, spend: 0 });
+});

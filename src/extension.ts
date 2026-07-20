@@ -415,7 +415,8 @@ async function collectUsage(changedFile?: string): Promise<UsageSnapshot> {
     sessionPath,
     usageSource,
     scannedAt: new Date(),
-    account: liveLimits?.account
+    account: liveLimits?.account,
+    ledgerValidation: snapshotCache?.sessionPath === sessionPath ? snapshotCache.ledgerValidation : undefined
   };
 }
 

@@ -194,14 +194,20 @@ async function updateLedger(context, prompts) {
         const input = Math.max(0, Math.floor(prompt.inputTokens ?? 0));
         const spend = Math.max(0, Number(prompt.estimatedCost ?? 0));
         const key = promptKey(prompt);
-        const previous = ledger.prompts[key];
-        if (!previous) {
+        const storedEntry = ledger.prompts[key];
+        if (storedEntry === undefined) {
             ledger.prompts[key] = { input, spend };
             ledger.promptCount += 1;
             ledger.total += input;
             ledger.estimatedSpend += spend;
             changed = true;
             continue;
+        }
+        const normalized = normalizeLedgerEntry(storedEntry, input);
+        const previous = normalized.entry;
+        if (normalized.changed) {
+            ledger.prompts[key] = previous;
+            changed = true;
         }
         if (input > previous.input) {
             ledger.total += input - previous.input;
@@ -213,10 +219,24 @@ async function updateLedger(context, prompts) {
             previous.spend = spend;
             changed = true;
         }
+        ledger.prompts[key] = previous;
     }
     if (changed)
         await context.globalState.update(LEDGER_KEY, ledger);
     return { ledger, migrated: loaded.migrated };
+}
+function normalizeLedgerEntry(value, fallbackInput) {
+    const storedObject = isObject(value) ? value : undefined;
+    const input = typeof value === "number"
+        ? Math.max(0, Math.floor(value))
+        : Number.isFinite(storedObject?.input)
+            ? Math.max(0, Math.floor(storedObject.input))
+            : fallbackInput;
+    const spend = Number.isFinite(storedObject?.spend) ? Math.max(0, Number(storedObject.spend)) : 0;
+    return {
+        entry: { input, spend },
+        changed: !storedObject || storedObject.input !== input || storedObject.spend !== spend
+    };
 }
 async function validateLedgerHistory(context, prompts) {
     const { ledger } = await updateLedger(context, prompts);

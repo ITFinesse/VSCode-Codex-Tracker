@@ -438,7 +438,8 @@ async function collectUsage(changedFile) {
         sessionPath,
         usageSource,
         scannedAt: new Date(),
-        account: liveLimits?.account
+        account: liveLimits?.account,
+        ledgerValidation: snapshotCache?.sessionPath === sessionPath ? snapshotCache.ledgerValidation : undefined
     };
 }
 async function readLiveRateLimits(force = false) {
