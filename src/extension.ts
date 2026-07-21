@@ -12,6 +12,12 @@ import { checkLeaderboardName, readLeaderboardSettings, saveLeaderboardSettings,
 import { normalizeAppearanceSettings, parseRateLimitResponse, parseSessionText } from "./usage";
 
 type JsonObject = Record<string, unknown>;
+type ChartOrganisation = "workspace" | "global";
+interface ChartLayout {
+  cardOrder: string[];
+  cardSizes: Record<string, { height: number; span: number }>;
+  promptColumnOrder: string[];
+}
 
 interface LimitWindow {
   remainingPercent?: number;
@@ -59,6 +65,10 @@ let displayTimeZone: string | undefined;
 let extensionVersion = "V:—";
 let extensionBuildTime = "T:--:--";
 let leaderboardForWebview: { enabled: boolean; name: string; code: string } | undefined;
+let extensionContext: vscode.ExtensionContext | undefined;
+const CHART_LAYOUT_KEY = "dashboard.chartLayout.v1";
+const CHART_CARD_IDS = new Set(["metric-input", "metric-output", "metric-cached", "metric-requests", "spend", "tokens", "model", "efficiency", "prompts", "table"]);
+const PROMPT_COLUMN_IDS = new Set(["date", "task", "prompt", "agent", "input", "output", "cached", "cost"]);
 const sessionFileCache = new Map<string, { size: number; modified: number; checkedAt: number; prompts: PromptRecord[] }>();
 let sessionFileListCache: { root: string; limit: number; expiresAt: number; files: string[] } | undefined;
 let rateLimitsCache:
@@ -89,6 +99,7 @@ const LEADERBOARD_EXTERNAL_URLS = new Set([
 ]);
 
 export function activate(context: vscode.ExtensionContext): void {
+  extensionContext = context;
   extensionVersion = `V:${String(context.extension.packageJSON.version ?? "—")}`;
   try {
     const buildTime = fsSync.statSync(path.join(context.extensionPath, "out", "extension.js")).mtime;
@@ -252,7 +263,7 @@ export function activate(context: vscode.ExtensionContext): void {
         context.subscriptions
       );
       view.webview.onDidReceiveMessage(
-        (message: { command?: string; appearance?: unknown; leaderboard?: unknown; error?: unknown; locale?: string; timeZone?: string; url?: unknown }) => {
+        (message: { command?: string; appearance?: unknown; leaderboard?: unknown; layout?: unknown; scope?: unknown; error?: unknown; locale?: string; timeZone?: string; url?: unknown }) => {
           if (message.command === "ready") {
             debugLog("Webview: ready message received.");
             displayLocale = typeof message.locale === "string" && message.locale ? message.locale : displayLocale;
@@ -272,6 +283,12 @@ export function activate(context: vscode.ExtensionContext): void {
             }
           } else if (message.command === "saveAppearance") {
             void saveAppearanceSettings(message.appearance).then(() => refresh(), () => undefined);
+          } else if (message.command === "saveChartLayout") {
+            void saveChartLayout(context, message.layout);
+          } else if (message.command === "saveChartOrganisation") {
+            void saveChartOrganisation(context, message.scope, message.layout).then(() => { if (snapshotCache) postSnapshot(snapshotCache); });
+          } else if (message.command === "resetChartLayout") {
+            void chartLayoutStore(context).update(CHART_LAYOUT_KEY, undefined);
           } else if (message.command === "refreshModelPrices") { const cachePath = path.join(context.globalStorageUri.fsPath, MODEL_PRICING_FILE); debugLog("Pricing: manual model-price refresh requested."); void refreshModelPricing(context, cachePath).then((success) => view.webview.postMessage({ type: "pricesRefreshed", success }), (error) => { debugLog(`Pricing: manual refresh failed: ${error instanceof Error ? error.message : String(error)}`); view.webview.postMessage({ type: "pricesRefreshed", success: false }); });
           } else if (message.command === "revalidateLedger") {
             void validateLedger().then((success) => view.webview.postMessage({ type: "ledgerRevalidated", success }));
@@ -886,6 +903,51 @@ function updateStatusBar(snapshot: UsageSnapshot): void {
   statusBarWeekly.show();
 }
 
+function readChartOrganisation(): ChartOrganisation {
+  return vscode.workspace.getConfiguration("codexUsage").get<ChartOrganisation>("chartOrganisation", "global") === "workspace" ? "workspace" : "global";
+}
+
+function chartLayoutStore(context: vscode.ExtensionContext, scope = readChartOrganisation()): vscode.Memento {
+  return scope === "workspace" ? context.workspaceState : context.globalState;
+}
+
+function normalizeChartLayout(value: unknown): ChartLayout {
+  const input = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const cardOrder = Array.isArray(input.cardOrder)
+    ? [...new Set(input.cardOrder.filter((id): id is string => typeof id === "string" && CHART_CARD_IDS.has(id)))]
+    : [];
+  const promptColumnOrder = Array.isArray(input.promptColumnOrder)
+    ? [...new Set(input.promptColumnOrder.filter((id): id is string => typeof id === "string" && PROMPT_COLUMN_IDS.has(id)))]
+    : [];
+  const sizes = input.cardSizes && typeof input.cardSizes === "object" && !Array.isArray(input.cardSizes)
+    ? input.cardSizes as Record<string, unknown>
+    : {};
+  const cardSizes: ChartLayout["cardSizes"] = {};
+  for (const [id, rawSize] of Object.entries(sizes)) {
+    if (!CHART_CARD_IDS.has(id) || !rawSize || typeof rawSize !== "object") continue;
+    const size = rawSize as Record<string, unknown>;
+    const height = Number(size.height);
+    const span = Number(size.span);
+    if (!Number.isFinite(height) || !Number.isFinite(span)) continue;
+    cardSizes[id] = { height: Math.max(100, Math.min(5000, Math.round(height))), span: Math.max(1, Math.min(12, Math.round(span))) };
+  }
+  return { cardOrder, cardSizes, promptColumnOrder };
+}
+
+function readChartLayout(context: vscode.ExtensionContext): ChartLayout {
+  return normalizeChartLayout(chartLayoutStore(context).get<unknown>(CHART_LAYOUT_KEY));
+}
+
+async function saveChartLayout(context: vscode.ExtensionContext, value: unknown): Promise<void> {
+  await chartLayoutStore(context).update(CHART_LAYOUT_KEY, normalizeChartLayout(value));
+}
+
+async function saveChartOrganisation(context: vscode.ExtensionContext, value: unknown, layout: unknown): Promise<void> {
+  const scope: ChartOrganisation = value === "workspace" ? "workspace" : "global";
+  await chartLayoutStore(context, scope).update(CHART_LAYOUT_KEY, normalizeChartLayout(layout));
+  await vscode.workspace.getConfiguration("codexUsage").update("chartOrganisation", scope, vscode.ConfigurationTarget.Global);
+}
+
 function postSnapshot(snapshot: UsageSnapshot): void {
   const renderStartedAt = performance.now();
   if (!panel || !webviewReady) {
@@ -931,6 +993,8 @@ function postSnapshot(snapshot: UsageSnapshot): void {
             }
           : undefined,
         appearance: readAppearanceSettings(),
+        chartOrganisation: readChartOrganisation(),
+        chartLayout: extensionContext ? readChartLayout(extensionContext) : normalizeChartLayout(undefined),
         leaderboard: leaderboardForWebview,
         ledgerValidation: snapshot.ledgerValidation ? { ...snapshot.ledgerValidation, checkedAt: snapshot.ledgerValidation.checkedAt.getTime() } : undefined,
         scannedAt: formatDateTime(snapshot.scannedAt),

@@ -12,10 +12,26 @@ export const dashboardClient = String.raw`    const vscode = acquireVsCodeApi();
     let cardLayout = viewState.cardLayout && typeof viewState.cardLayout === 'object' ? viewState.cardLayout : {};
     const storedCardOrder = Array.isArray(viewState.cardOrder) ? viewState.cardOrder : Object.values(cardLayout).flat();
     let cardOrder = [...new Set(storedCardOrder.filter(id => typeof id === 'string'))];
+    let cardSizes = viewState.cardSizes && typeof viewState.cardSizes === 'object' ? viewState.cardSizes : {};
+    let chartOrganisation = 'global';
     const promptColumnKeys = ['date', 'task', 'prompt', 'agent', 'input', 'output', 'cached', 'cost'];
     const storedPromptColumnOrder = Array.isArray(viewState.promptColumnOrder) ? viewState.promptColumnOrder : [];
     let promptColumnOrder = [...new Set(storedPromptColumnOrder.filter(key => promptColumnKeys.includes(key)))];
     promptColumnOrder.push(...promptColumnKeys.filter(key => !promptColumnOrder.includes(key)));
+    const currentLayout = () => ({ cardOrder, cardSizes, promptColumnOrder });
+    const persistLayout = () => {
+      vscode.setState({ ...vscode.getState(), ...currentLayout() });
+      vscode.postMessage({ command: 'saveChartLayout', layout: currentLayout() });
+    };
+    const applyLayout = layout => {
+      if (!layout || typeof layout !== 'object') return;
+      if (Array.isArray(layout.cardOrder)) cardOrder = [...new Set(layout.cardOrder.filter(id => typeof id === 'string'))];
+      if (layout.cardSizes && typeof layout.cardSizes === 'object') cardSizes = layout.cardSizes;
+      if (Array.isArray(layout.promptColumnOrder)) {
+        promptColumnOrder = [...new Set(layout.promptColumnOrder.filter(key => promptColumnKeys.includes(key)))];
+        promptColumnOrder.push(...promptColumnKeys.filter(key => !promptColumnOrder.includes(key)));
+      }
+    };
     const defaultVisibility = { showSpend: true, showMetrics: true, showModels: true, showTokens: true, showPrompts: true };
     let visibility = defaultVisibility;
     try {
@@ -151,24 +167,32 @@ export const dashboardClient = String.raw`    const vscode = acquireVsCodeApi();
       const content = $('content');
       const cards = [...content.querySelectorAll(':scope > [data-card]')];
       const cardById = new Map(cards.map(card => [card.dataset.card, card]));
-      cardOrder.forEach(id => {
+      const orderedIds = [...cardOrder, ...cards.map(card => card.dataset.card).filter(id => !cardOrder.includes(id))];
+      orderedIds.forEach(id => {
         const card = cardById.get(id);
         if (card) content.appendChild(card);
       });
       const saveOrder = () => {
         cardOrder = [...content.querySelectorAll(':scope > [data-card]')].map(card => card.dataset.card);
-        const state = { ...vscode.getState(), cardOrder };
-        delete state.cardLayout;
-        vscode.setState(state);
+        persistLayout();
+      };
+      const enforceMinimumHeight = card => {
+        const configuredMinimum = Math.max(100, Number(card.dataset.minHeight || 220));
+        card.style.minHeight = '0px';
+        const contentMinimum = Math.max(configuredMinimum, Math.ceil(card.scrollHeight));
+        card.style.minHeight = contentMinimum + 'px';
+        if (card.offsetHeight < contentMinimum) card.style.height = contentMinimum + 'px';
+        return contentMinimum;
       };
       cards.forEach(card => {
         const id = card.dataset.card;
         card.draggable = true;
-        const size = vscode.getState()?.cardSizes?.[id];
+        const size = cardSizes[id];
         const minSpan = Math.max(1, Math.min(12, Number(card.dataset.minSpan || 1)));
         const span = Math.max(minSpan, Math.min(12, Number(size?.span || card.dataset.defaultSpan || 4)));
         card.style.setProperty('--card-span', String(span));
         if (size?.height) card.style.height = size.height + 'px';
+        enforceMinimumHeight(card);
         card.ondragstart = event => {
           if (event.target !== card) return;
           card.classList.add('dragging');
@@ -198,12 +222,14 @@ export const dashboardClient = String.raw`    const vscode = acquireVsCodeApi();
           const gap = parseFloat(styles.columnGap) || 0;
           const columnWidth = (content.clientWidth - gap * 11) / 12;
           const resizedSpan = Math.max(minSpan, Math.min(12, Math.round((card.getBoundingClientRect().width + gap) / (columnWidth + gap))));
-          const cardSizes = { ...(vscode.getState()?.cardSizes || {}) };
-          cardSizes[id] = { height: card.offsetHeight, span: resizedSpan };
           card.style.width = '';
           card.style.setProperty('--card-span', String(resizedSpan));
-          vscode.setState({ ...vscode.getState(), cardSizes });
-          charts.forEach(chart => chart.resize());
+          requestAnimationFrame(() => {
+            const minimumHeight = enforceMinimumHeight(card);
+            cardSizes = { ...cardSizes, [id]: { height: Math.max(card.offsetHeight, minimumHeight), span: resizedSpan } };
+            persistLayout();
+            charts.forEach(chart => chart.resize());
+          });
         };
       });
       content.ondragover = event => {
@@ -247,7 +273,7 @@ export const dashboardClient = String.raw`    const vscode = acquireVsCodeApi();
           const rect = header.getBoundingClientRect();
           nextOrder.splice(targetIndex + (event.clientX > rect.left + rect.width / 2 ? 1 : 0), 0, sourceKey);
           promptColumnOrder = nextOrder;
-          vscode.setState({ ...vscode.getState(), promptColumnOrder });
+          persistLayout();
           render();
         };
       });
@@ -285,7 +311,7 @@ export const dashboardClient = String.raw`    const vscode = acquireVsCodeApi();
         cost: acc.cost + (p.cost || 0),
         requests: acc.requests + 1
       }), { input: 0, output: 0, cached: 0, cost: 0, requests: 0 });
-      const metric = (name, value, key, color, info) => '<article class="metric" data-card="metric-' + key + '" data-default-span="4" data-min-span="2" draggable="true"><div class="eyebrow">' + name + ' <button class="info" data-info="' + info + '">i</button></div><div class="metric-value">' + value + '</div>' + canvas('metric-' + key, 45, name + ' trend') + '</article>';
+      const metric = (name, value, key, color, info) => '<article class="metric" data-card="metric-' + key + '" data-default-span="4" data-min-span="2" data-min-height="120" draggable="true"><div class="eyebrow">' + name + ' <button class="info" data-info="' + info + '">i</button></div><div class="metric-value">' + value + '</div>' + canvas('metric-' + key, 45, name + ' trend') + '</article>';
       const group = models(prompts);
       $('fiveHour').textContent = snapshot.fiveHour.remaining;
       $('fiveReset').textContent = 'Reset ' + snapshot.fiveHour.reset;
@@ -327,10 +353,10 @@ export const dashboardClient = String.raw`    const vscode = acquireVsCodeApi();
 
       $('content').innerHTML =
         (visibility.showSpend
-          ? '<section class="panel spend-panel" data-card="spend" data-default-span="12" data-min-span="6"><div><div class="eyebrow">Total Spend <button class="info" data-info="Estimated prompt spend across the selected period.">i</button></div><div class="big-value">' + money(totals.cost) + '</div><div class="trend">Current range <span>per-point timestamps</span></div></div><div>' + canvas('spend-chart', 220, 'Spend over time') + '</div></section>'
+          ? '<section class="panel spend-panel" data-card="spend" data-default-span="12" data-min-span="6" data-min-height="240"><div><div class="eyebrow">Total Spend <button class="info" data-info="Estimated prompt spend across the selected period.">i</button></div><div class="big-value">' + money(totals.cost) + '</div><div class="trend">Current range <span>per-point timestamps</span></div></div><div>' + canvas('spend-chart', 220, 'Spend over time') + '</div></section>'
           : '') +
         (visibility.showTokens
-          ? '<section class="panel token-panel" data-card="tokens" data-default-span="12" data-min-span="6"><h2 class="panel-title">Tokens Over Time <button class="info" data-info="Input and cached tokens use the left axis; output uses the right axis.">i</button></h2>' + canvas('tokens-chart', 260, 'Input, output, and cached tokens over time') + '</section>'
+          ? '<section class="panel token-panel" data-card="tokens" data-default-span="12" data-min-span="6" data-min-height="300"><h2 class="panel-title">Tokens Over Time <button class="info" data-info="Input and cached tokens use the left axis; output uses the right axis.">i</button></h2>' + canvas('tokens-chart', 260, 'Input, output, and cached tokens over time') + '</section>'
           : '') +
         (visibility.showMetrics
           ? metric('Input Tokens', number(totals.input), 'input', palette[2], 'Tokens sent to Codex. The sparkline uses per-point timestamps.')
@@ -338,14 +364,14 @@ export const dashboardClient = String.raw`    const vscode = acquireVsCodeApi();
             + metric('Cached Tokens', number(totals.cached), 'cached', palette[0], 'Cached input tokens recorded by Codex. The sparkline uses per-point timestamps.')
           : '') +
         (visibility.showModels
-          ? '<article class="panel" data-card="model" data-default-span="4" data-min-span="4"><h2 class="panel-title">Usage by Model &amp; Cost</h2><div class="model-chart">' + canvas('model-chart', 190, 'Usage by model and cost') + '</div><div class="model-list">' + group.map((g, i) => '<div class="model-row" data-model-index="' + i + '" role="button" tabindex="0" title="Toggle ' + esc(g.name) + '"><i class="swatch" style="background:' + palette[i % palette.length] + '"></i><span>' + esc(g.name) + '</span><span>' + money(g.cost) + '</span><span class="pct">' + (totals.cost ? (g.cost / totals.cost * 100).toFixed(1) : '0.0') + '%</span></div>').join('') + '</div></article>'
-            + '<article class="panel" data-card="efficiency" data-default-span="4" data-min-span="4"><h2 class="panel-title">Average tokens per prompt</h2>' + canvas('efficiency-chart', 170, 'Average input and output tokens per prompt by model') + '</article>'
+          ? '<article class="panel" data-card="model" data-default-span="4" data-min-span="4" data-min-height="300"><h2 class="panel-title">Usage by Model &amp; Cost</h2><div class="model-chart">' + canvas('model-chart', 190, 'Usage by model and cost') + '</div><div class="model-list">' + group.map((g, i) => '<div class="model-row" data-model-index="' + i + '" role="button" tabindex="0" title="Toggle ' + esc(g.name) + '"><i class="swatch" style="background:' + palette[i % palette.length] + '"></i><span>' + esc(g.name) + '</span><span>' + money(g.cost) + '</span><span class="pct">' + (totals.cost ? (g.cost / totals.cost * 100).toFixed(1) : '0.0') + '%</span></div>').join('') + '</div></article>'
+            + '<article class="panel" data-card="efficiency" data-default-span="4" data-min-span="4" data-min-height="220"><h2 class="panel-title">Average tokens per prompt</h2>' + canvas('efficiency-chart', 170, 'Average input and output tokens per prompt by model') + '</article>'
           : '') +
         (visibility.showPrompts
-          ? '<article class="panel" data-card="prompts" data-default-span="4" data-min-span="4"><h2 class="panel-title">Prompts <button class="info" data-info="Number of prompts sent each day in the selected period.">i</button></h2>' + canvas('prompts-chart', 170, 'Prompts over time') + '</article>'
+          ? '<article class="panel" data-card="prompts" data-default-span="4" data-min-span="4" data-min-height="220"><h2 class="panel-title">Prompts <button class="info" data-info="Number of prompts sent each day in the selected period.">i</button></h2>' + canvas('prompts-chart', 170, 'Prompts over time') + '</article>'
           : '') +
         (visibility.showPrompts
-          ? '<section class="panel table-panel" data-card="table" data-default-span="12" data-min-span="6"><div class="table-head"><h2>Prompt Usage</h2><input id="search" class="search" type="search" placeholder="Search prompts…"><button class="sort ' + (sortMode === 'latest' ? 'active' : '') + '" data-sort="latest">Latest</button><button class="sort ' + (sortMode === 'agent' ? 'active' : '') + '" data-sort="agent">Agent</button><button class="sort ' + (sortMode === 'tokens' ? 'active' : '') + '" data-sort="tokens">Tokens ↓</button><label class="row-count">Rows <select id="rowCount"><option>4</option><option>10</option><option>25</option><option>100</option></select></label></div><div id="tableScroll" class="table-scroll"><table><thead><tr>' + columnHeadersHtml + '</tr></thead><tbody>' + (rows || '<tr><td colspan="8" class="empty">No prompts in this range</td></tr>') + '</tbody></table></div></section>'
+          ? '<section class="panel table-panel" data-card="table" data-default-span="12" data-min-span="6" data-min-height="160"><div class="table-head"><h2>Prompt Usage</h2><input id="search" class="search" type="search" placeholder="Search prompts…"><button class="sort ' + (sortMode === 'latest' ? 'active' : '') + '" data-sort="latest">Latest</button><button class="sort ' + (sortMode === 'agent' ? 'active' : '') + '" data-sort="agent">Agent</button><button class="sort ' + (sortMode === 'tokens' ? 'active' : '') + '" data-sort="tokens">Tokens ↓</button><label class="row-count">Rows <select id="rowCount"><option>4</option><option>10</option><option>25</option><option>100</option></select></label></div><div id="tableScroll" class="table-scroll"><table><thead><tr>' + columnHeadersHtml + '</tr></thead><tbody>' + (rows || '<tr><td colspan="8" class="empty">No prompts in this range</td></tr>') + '</tbody></table></div></section>'
           : '');
       const noMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
        if ($('spend-chart')) { const options = commonOptions('Spend over time', false, timeLabels(points)); const theme = chartTheme(); options.scales.y.display = false; options.scales.yCost = { position: 'right', beginAtZero: true, ticks: { color: theme.text, callback: value => money(value, 2) }, title: { display: true, text: 'Estimated cost (USD)', color: theme.text }, grid: { drawOnChartArea: true, color: theme.grid + '66' }, border: { display: false } }; buildChart('spend-chart', { type: 'line', data: { labels: timeLabels(points), datasets: [lineDataset('Spend', points, 'cost', palette[0], true, 'yCost', false, 'money')] }, options }); }
@@ -455,6 +481,7 @@ export const dashboardClient = String.raw`    const vscode = acquireVsCodeApi();
     $('resetLayout').onclick = () => {
       cardLayout = {};
       cardOrder = [];
+      cardSizes = {};
       promptColumnOrder = [...promptColumnKeys];
       const state = { ...vscode.getState() };
       delete state.cardLayout;
@@ -462,6 +489,7 @@ export const dashboardClient = String.raw`    const vscode = acquireVsCodeApi();
       delete state.cardOrder;
       delete state.promptColumnOrder;
       vscode.setState(state);
+      vscode.postMessage({ command: 'resetChartLayout' });
       render();
     };
     $('refreshModelPrices').onclick = () => { $('refreshModelPrices').disabled = true; $('refreshModelPrices').textContent = 'Refreshing prices…'; vscode.postMessage({ command: 'refreshModelPrices' }); };
@@ -499,6 +527,7 @@ export const dashboardClient = String.raw`    const vscode = acquireVsCodeApi();
         }
       });
       vscode.postMessage({ command: 'saveLeaderboard', leaderboard: { enabled: $('leaderboardEnabled').checked, name: $('leaderboardName').value, code: $('leaderboardCode').value } });
+      vscode.postMessage({ command: 'saveChartOrganisation', scope: $('chartOrganisation').value, layout: currentLayout() });
       $('settings').hidden = true;
       render();
     };
@@ -545,6 +574,8 @@ export const dashboardClient = String.raw`    const vscode = acquireVsCodeApi();
       if (data.type === 'ledgerRevalidated') { $('revalidateLedger').disabled = false; $('revalidateLedger').textContent = data.success ? 'Ledger revalidated' : 'Revalidate ledger'; return; }
       if (data.type !== 'snapshot') return;
       snapshot = data.snapshot;
+      chartOrganisation = snapshot.chartOrganisation === 'workspace' ? 'workspace' : 'global';
+      applyLayout(snapshot.chartLayout);
       const metadata = data.metadata ?? snapshot.metadata;
       lastUpdated = metadata?.lastUpdate || snapshot.scannedAt;
       if (metadata) {
@@ -561,6 +592,7 @@ export const dashboardClient = String.raw`    const vscode = acquireVsCodeApi();
       $('outputDebug').checked = appearance.outputDebug === true;
       ['warningThreshold', 'criticalThreshold', 'belowFullColor', 'warningColor', 'criticalColor'].forEach(key => $(key).value = appearance[key]);
       $('defaultRangeDays').value = String(rangeDays);
+      $('chartOrganisation').value = chartOrganisation;
       ['showSpend', 'showMetrics', 'showModels', 'showTokens', 'showPrompts'].forEach(key => $(key).checked = visibility[key] !== false);
       render();
       updateLabel();

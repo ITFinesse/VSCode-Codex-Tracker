@@ -2,7 +2,7 @@
   "name": "vscode-codex-tracker",
   "displayName": "VSCode Codex Tracker",
   "description": "Shows Codex rolling-window usage and local prompt token history.",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "publisher": "ITFinesse",
   "icon": "resources/icon.png",
   "repository": {
@@ -114,6 +114,19 @@
           "type": "string",
           "default": "#cccccc",
           "description": "Status-bar color used when remaining usage is below 100% but above warning."
+        },
+        "codexUsage.chartOrganisation": {
+          "type": "string",
+          "enum": [
+            "global",
+            "workspace"
+          ],
+          "enumDescriptions": [
+            "Share chart order and sizes across all VS Code windows.",
+            "Keep chart order and sizes specific to this workspace."
+          ],
+          "default": "global",
+          "description": "Controls whether dashboard chart organisation is stored globally or per workspace."
         },
         "codexUsage.leaderboardEnabled": {
           "type": "boolean",

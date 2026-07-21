@@ -58,6 +58,10 @@ let displayTimeZone;
 let extensionVersion = "V:—";
 let extensionBuildTime = "T:--:--";
 let leaderboardForWebview;
+let extensionContext;
+const CHART_LAYOUT_KEY = "dashboard.chartLayout.v1";
+const CHART_CARD_IDS = new Set(["metric-input", "metric-output", "metric-cached", "metric-requests", "spend", "tokens", "model", "efficiency", "prompts", "table"]);
+const PROMPT_COLUMN_IDS = new Set(["date", "task", "prompt", "agent", "input", "output", "cached", "cost"]);
 const sessionFileCache = new Map();
 let sessionFileListCache;
 let rateLimitsCache;
@@ -83,6 +87,7 @@ const LEADERBOARD_EXTERNAL_URLS = new Set([
     "https://donate.stripe.com/7sY14q4DM6f81dC69Y8bS00"
 ]);
 function activate(context) {
+    extensionContext = context;
     extensionVersion = `V:${String(context.extension.packageJSON.version ?? "—")}`;
     try {
         const buildTime = fsSync.statSync(path.join(context.extensionPath, "out", "extension.js")).mtime;
@@ -276,6 +281,16 @@ function activate(context) {
                 }
                 else if (message.command === "saveAppearance") {
                     void saveAppearanceSettings(message.appearance).then(() => refresh(), () => undefined);
+                }
+                else if (message.command === "saveChartLayout") {
+                    void saveChartLayout(context, message.layout);
+                }
+                else if (message.command === "saveChartOrganisation") {
+                    void saveChartOrganisation(context, message.scope, message.layout).then(() => { if (snapshotCache)
+                        postSnapshot(snapshotCache); });
+                }
+                else if (message.command === "resetChartLayout") {
+                    void chartLayoutStore(context).update(CHART_LAYOUT_KEY, undefined);
                 }
                 else if (message.command === "refreshModelPrices") {
                     const cachePath = path.join(context.globalStorageUri.fsPath, MODEL_PRICING_FILE);
@@ -968,6 +983,47 @@ function updateStatusBar(snapshot) {
     statusBarFiveHour.show();
     statusBarWeekly.show();
 }
+function readChartOrganisation() {
+    return vscode.workspace.getConfiguration("codexUsage").get("chartOrganisation", "global") === "workspace" ? "workspace" : "global";
+}
+function chartLayoutStore(context, scope = readChartOrganisation()) {
+    return scope === "workspace" ? context.workspaceState : context.globalState;
+}
+function normalizeChartLayout(value) {
+    const input = value && typeof value === "object" ? value : {};
+    const cardOrder = Array.isArray(input.cardOrder)
+        ? [...new Set(input.cardOrder.filter((id) => typeof id === "string" && CHART_CARD_IDS.has(id)))]
+        : [];
+    const promptColumnOrder = Array.isArray(input.promptColumnOrder)
+        ? [...new Set(input.promptColumnOrder.filter((id) => typeof id === "string" && PROMPT_COLUMN_IDS.has(id)))]
+        : [];
+    const sizes = input.cardSizes && typeof input.cardSizes === "object" && !Array.isArray(input.cardSizes)
+        ? input.cardSizes
+        : {};
+    const cardSizes = {};
+    for (const [id, rawSize] of Object.entries(sizes)) {
+        if (!CHART_CARD_IDS.has(id) || !rawSize || typeof rawSize !== "object")
+            continue;
+        const size = rawSize;
+        const height = Number(size.height);
+        const span = Number(size.span);
+        if (!Number.isFinite(height) || !Number.isFinite(span))
+            continue;
+        cardSizes[id] = { height: Math.max(100, Math.min(5000, Math.round(height))), span: Math.max(1, Math.min(12, Math.round(span))) };
+    }
+    return { cardOrder, cardSizes, promptColumnOrder };
+}
+function readChartLayout(context) {
+    return normalizeChartLayout(chartLayoutStore(context).get(CHART_LAYOUT_KEY));
+}
+async function saveChartLayout(context, value) {
+    await chartLayoutStore(context).update(CHART_LAYOUT_KEY, normalizeChartLayout(value));
+}
+async function saveChartOrganisation(context, value, layout) {
+    const scope = value === "workspace" ? "workspace" : "global";
+    await chartLayoutStore(context, scope).update(CHART_LAYOUT_KEY, normalizeChartLayout(layout));
+    await vscode.workspace.getConfiguration("codexUsage").update("chartOrganisation", scope, vscode.ConfigurationTarget.Global);
+}
 function postSnapshot(snapshot) {
     const renderStartedAt = performance.now();
     if (!panel || !webviewReady) {
@@ -1013,6 +1069,8 @@ function postSnapshot(snapshot) {
                 }
                 : undefined,
             appearance: readAppearanceSettings(),
+            chartOrganisation: readChartOrganisation(),
+            chartLayout: extensionContext ? readChartLayout(extensionContext) : normalizeChartLayout(undefined),
             leaderboard: leaderboardForWebview,
             ledgerValidation: snapshot.ledgerValidation ? { ...snapshot.ledgerValidation, checkedAt: snapshot.ledgerValidation.checkedAt.getTime() } : undefined,
             scannedAt: formatDateTime(snapshot.scannedAt),

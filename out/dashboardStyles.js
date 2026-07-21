@@ -33,12 +33,12 @@ exports.dashboardStyles = String.raw `    :root{
     .icon-button{width:34px;height:34px;border:1px solid var(--border);border-radius:5px;background:var(--surface2);color:var(--text);cursor:pointer}
     .account-meta{margin:-10px 0 14px;color:var(--muted);text-align:center}
     .panel,.metric{border:1px solid var(--border);border-radius:7px;background:linear-gradient(180deg,color-mix(in srgb,var(--surface2) 42%,var(--surface)),var(--surface))}
-    [data-card]{position:relative;grid-column:span var(--card-span,4);width:auto;resize:both;overflow:auto;min-width:260px;min-height:220px}
+    [data-card]{position:relative;grid-column:span var(--card-span,4);width:auto;resize:both;overflow:hidden;min-width:280px;min-height:220px}
     #content{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));grid-auto-flow:row;gap:14px;align-items:start}
     [data-card]::after{content:'↘';position:absolute;right:6px;bottom:3px;color:var(--muted);font-size:11px;pointer-events:none}
     [data-card].dragging{opacity:.55;outline:1px dashed var(--accent)}
     [data-card^="metric-"]{min-width:180px;min-height:120px}
-    [data-card="spend"]{min-height:240px}[data-card="tokens"]{min-height:300px}[data-card="model"]{min-height:300px}
+    [data-card="spend"]{min-height:240px}[data-card="tokens"]{min-height:300px}[data-card="model"]{min-width:320px;min-height:300px}[data-card="efficiency"]{min-width:320px}
     .table-panel{min-width:0;min-height:160px}
     .spend-panel{display:grid;grid-template-columns:minmax(155px,180px) minmax(0,1fr);gap:12px;padding:18px}
     .eyebrow{display:flex;gap:6px;align-items:center;font-size:14px}
@@ -58,7 +58,7 @@ exports.dashboardStyles = String.raw `    :root{
     .model-chart{height:190px}
     .model-list{display:grid;gap:10px}
     .efficiency-title{margin:18px 0 4px;color:var(--muted);font-size:12px}
-    .model-row{display:grid;grid-template-columns:10px 1fr auto auto;gap:9px}
+    .model-row{display:grid;grid-template-columns:10px minmax(0,1fr) auto auto;gap:9px}.model-row>span:nth-child(2){overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .swatch{width:9px;height:9px;border-radius:50%;margin-top:5px}
     .pct{color:var(--muted);min-width:48px;text-align:right}
     .table-panel{overflow:hidden}
@@ -107,5 +107,5 @@ exports.dashboardStyles = String.raw `    :root{
     .leaderboard-links{display:flex;gap:8px;margin-top:10px}
     @media(max-width:900px){.topbar{flex-wrap:wrap}.top-actions{width:100%;justify-content:flex-end}.settings{top:auto;bottom:auto}}
     @media(max-width:900px){.spend-panel{grid-template-columns:1fr}[data-card]{grid-column:span 6}[data-card][data-default-span="12"]{grid-column:1/-1}}
-    @media(max-width:600px){body{padding:14px}.updated{display:none}.settings{left:14px;right:14px;width:auto}[data-card]{grid-column:1/-1;resize:vertical}}`;
+    @media(max-width:720px){body{padding:14px}.updated{display:none}.settings{left:14px;right:14px;width:auto}[data-card]{grid-column:1/-1;resize:vertical}}`;
 //# sourceMappingURL=dashboardStyles.js.map

@@ -30,6 +30,9 @@ exports.dashboardMarkup = String.raw `  <header class="topbar">
         <label>Default Filter
           <select id="defaultRangeDays"><option value="1">1D</option><option value="7">7D</option><option value="30">30D</option><option value="90">90D</option><option value="0">Custom / all history</option></select>
         </label>
+        <label>Chart Organisation
+          <select id="chartOrganisation"><option value="global">Global</option><option value="workspace">Workspace</option></select>
+        </label>
       </div>
       <label class="debug-toggle"><input id="outputDebug" type="checkbox"><span>Output Debug</span></label>
       <button id="refreshModelPrices" type="button">Refresh model prices</button>
