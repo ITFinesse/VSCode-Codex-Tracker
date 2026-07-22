@@ -66,6 +66,63 @@ test("parseSessionText ignores metadata and accumulates prompt token updates", (
   );
 });
 
+test("parseSessionText uses later session metadata title", () => {
+  const lines = [
+    event("2026-07-20T10:00:00.000Z", "response_item", {
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "Fix the ledger" }]
+    }),
+    event("2026-07-20T10:01:00.000Z", "event_msg", {
+      type: "token_count",
+      info: {
+        last_token_usage: {
+          input_tokens: 40,
+          cached_input_tokens: 0,
+          output_tokens: 0,
+          reasoning_output_tokens: 0
+        }
+      }
+    }),
+    event("2026-07-20T10:02:00.000Z", "event_msg", {
+      type: "session_title",
+      sessionTitle: "Renamed ledger task"
+    })
+  ];
+
+  const prompts = parseSessionText(lines.join("\n"), "session-2");
+
+  assert.equal(prompts.length, 1);
+  assert.equal(prompts[0].sessionTitle, "Renamed ledger task");
+});
+
+test("parseSessionText uses top-level session title updates", () => {
+  const lines = [
+    event("2026-07-20T10:00:00.000Z", "response_item", {
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "Draft architecture notes" }]
+    }),
+    event("2026-07-20T10:01:00.000Z", "event_msg", {
+      type: "token_count",
+      info: {
+        last_token_usage: {
+          input_tokens: 10,
+          cached_input_tokens: 0,
+          output_tokens: 0,
+          reasoning_output_tokens: 0
+        }
+      }
+    }),
+    JSON.stringify({ timestamp: "2026-07-20T10:01:30.000Z", type: "session_title", sessionName: "Codex Tracker 220726" })
+  ];
+
+  const prompts = parseSessionText(lines.join("\n"), "session-3");
+
+  assert.equal(prompts.length, 1);
+  assert.equal(prompts[0].sessionTitle, "Codex Tracker 220726");
+});
+
 test("parseSessionText skips malformed JSON lines", () => {
   const text = [
     "{not-json}",

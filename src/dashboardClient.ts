@@ -350,7 +350,7 @@ export const dashboardClient = String.raw`    const vscode = acquireVsCodeApi();
       const numericColumns = new Set(['input', 'output', 'cached', 'cost']);
       const promptCell = (p, i, key) => {
         if (key === 'date') return '<td data-col="date" class="date-cell">' + esc(p.timestamp) + '</td>';
-        if (key === 'task') return '<td data-col="task" class="session-cell" title="' + esc(p.session) + '">' + esc(p.sessionTitle || p.session) + '</td>';
+        if (key === 'task') return '<td data-col="task" class="session-cell" title="' + esc(p.sessionTitle || p.session) + '">' + esc(p.sessionTitle || p.session) + '</td>';
         if (key === 'prompt') return '<td data-col="prompt" class="prompt-cell"><div class="prompt-row"><span class="prompt-text">' + esc(p.text) + '</span><button class="expand" data-expand="' + i + '">Expand</button></div><div class="prompt-full" hidden>' + esc(p.text) + '</div></td>';
         if (key === 'agent') return '<td data-col="agent">' + esc(p.model || 'Codex') + '</td>';
         if (key === 'input') return '<td data-col="input" class="num">' + number(p.inputTokens) + '</td>';

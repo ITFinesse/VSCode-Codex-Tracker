@@ -71,6 +71,7 @@ const CHART_CARD_IDS = new Set(["metric-input", "metric-output", "metric-cached"
 const PROMPT_COLUMN_IDS = new Set(["date", "task", "prompt", "agent", "input", "output", "cached", "cost"]);
 const sessionFileCache = new Map<string, { size: number; modified: number; checkedAt: number; prompts: PromptRecord[] }>();
 let sessionFileListCache: { root: string; limit: number; expiresAt: number; files: string[] } | undefined;
+const sessionTitleIndexCache = new Map<string, { loadedAt: number; titles: Map<string, string> }>();
 let rateLimitsCache:
   { expiresAt: number; value: { fiveHour: LimitWindow; weekly: LimitWindow; account?: AccountSummary } | undefined } | undefined;
 let rateLimitsInFlight: Promise<{ fiveHour: LimitWindow; weekly: LimitWindow; account?: AccountSummary } | undefined> | undefined;
@@ -87,6 +88,7 @@ interface ModelPricingCache { version: number; refreshedAt: number; rates: Recor
 const DIRECTORY_SCAN_CONCURRENCY = 8;
 const SESSION_DISCOVERY_CACHE_MS = 30_000;
 const SESSION_STAT_CACHE_MS = 30_000;
+const SESSION_INDEX_CACHE_MS = 60_000;
 const MODEL_PRICING_FILE = "model-prices.json";
 const MODEL_PRICING_REFRESH_MS = 12 * 60 * 60 * 1_000;
 const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
@@ -419,10 +421,11 @@ async function collectUsage(changedFile?: string): Promise<UsageSnapshot> {
   const configuredPath = configuration.get<string>("sessionsPath", "").trim();
   const sessionPath = configuredPath || path.join(os.homedir(), ".codex", "sessions");
   const limit = configuration.get<number>("historyLimit", 100);
+  const sessionTitleLookup = await readSessionTitleLookup(sessionPath);
   if (changedFile && snapshotCache && changedFile.endsWith(".jsonl")) {
     const liveLimits = await readLiveRateLimits(true);
     const session = path.basename(changedFile, ".jsonl");
-    const updatedPrompts = await readSession(changedFile, true);
+    const updatedPrompts = await readSession(changedFile, true, sessionTitleLookup.get(sessionIdFromFileName(changedFile)));
     const prompts = [...snapshotCache.prompts.filter((prompt) => prompt.session !== session), ...updatedPrompts].sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime()).slice(0, limit);
     debugLog(`Collect: updated active session ${session}; ${updatedPrompts.length} prompt(s), no historical scan.`);
     return { ...snapshotCache, fiveHour: hasLimitData(liveLimits?.fiveHour) ? liveLimits!.fiveHour : snapshotCache.fiveHour, weekly: hasLimitData(liveLimits?.weekly) ? liveLimits!.weekly : snapshotCache.weekly, account: liveLimits?.account ?? snapshotCache.account, usageSource: liveLimits ? "codex app-server" : snapshotCache.usageSource, prompts, scannedAt: new Date() };
@@ -437,7 +440,9 @@ async function collectUsage(changedFile?: string): Promise<UsageSnapshot> {
   const parseStartedAt = performance.now();
   for (const [index, file] of files.entries()) {
     try {
-      prompts.push(...(await readSession(file, index < 5)));
+      const sessionTitle = sessionTitleLookup.get(sessionIdFromFileName(file));
+      const parsedPrompts = await readSession(file, index < 5, sessionTitle);
+      prompts.push(...parsedPrompts);
     } catch (error) {
       debugWarn(`Collect: failed reading ${file}: ${String(error)}`);
     }
@@ -849,15 +854,84 @@ async function newestJsonlFiles(root: string, limit: number): Promise<string[]> 
   return files;
 }
 
-async function readSession(file: string, forceCheck = false): Promise<PromptRecord[]> {
+function normalizeSessionTitle(value: string): string {
+  const trimmed = value.trim().replace(/\s+/g, " ");
+  return trimmed.slice(0, 96) || "Codex Session";
+}
+
+function applySessionTitleOverride(prompts: PromptRecord[], sessionTitle?: string): PromptRecord[] {
+  if (!sessionTitle) return prompts;
+  const title = normalizeSessionTitle(sessionTitle);
+  return prompts.map((prompt) => ({ ...prompt, sessionTitle: title }));
+}
+
+function sessionIdFromFileName(file: string): string {
+  const base = path.basename(file, ".jsonl");
+  const sessionIdMatch = base.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\.[^.]*)?$/i);
+  return sessionIdMatch?.[1] ?? base;
+}
+
+function parseSessionTitleLine(line: string): { id: string; threadName: string } | undefined {
+  try {
+    const value = JSON.parse(line) as { id?: unknown; thread_name?: unknown };
+    if (typeof value !== "object" || value === null || typeof value.id !== "string" || typeof value.thread_name !== "string") {
+      return undefined;
+    }
+    return { id: value.id, threadName: value.thread_name };
+  } catch {
+    return undefined;
+  }
+}
+
+async function readSessionTitleLookup(sessionPath: string): Promise<Map<string, string>> {
+  const cached = sessionTitleIndexCache.get(sessionPath);
+  const now = Date.now();
+  if (cached && cached.loadedAt + SESSION_INDEX_CACHE_MS > now) {
+    return new Map(cached.titles);
+  }
+  const indexPaths = [
+    path.join(path.dirname(sessionPath), "session_index.jsonl"),
+    path.join(os.homedir(), ".codex", "session_index.jsonl")
+  ];
+
+  for (const candidate of indexPaths) {
+    try {
+      const text = await fs.readFile(candidate, "utf8");
+      const titles = new Map<string, string>();
+      for (const line of text.split(/\r?\n/)) {
+        const parsed = parseSessionTitleLine(line);
+        if (parsed && parsed.id && parsed.threadName) {
+          titles.set(parsed.id, normalizeSessionTitle(parsed.threadName));
+        }
+      }
+      const entry = { loadedAt: now, titles };
+      sessionTitleIndexCache.set(sessionPath, entry);
+      return new Map(titles);
+    } catch {
+      // If this path does not exist or is unreadable, try the next fallback.
+    }
+  }
+
+  const fallback = { loadedAt: now, titles: new Map<string, string>() };
+  sessionTitleIndexCache.set(sessionPath, fallback);
+  return new Map();
+}
+
+async function readSession(file: string, forceCheck = false, sessionTitle?: string): Promise<PromptRecord[]> {
   const cached = sessionFileCache.get(file);
-  if (cached && !forceCheck && cached.checkedAt + SESSION_STAT_CACHE_MS > Date.now()) return cached.prompts;
+  const resolvedTitle = sessionTitle ? normalizeSessionTitle(sessionTitle) : undefined;
+  if (cached && !forceCheck && cached.checkedAt + SESSION_STAT_CACHE_MS > Date.now()) {
+    return applySessionTitleOverride(cached.prompts, resolvedTitle);
+  }
   const stat = await fs.stat(file);
   if (cached && cached.size === stat.size && cached.modified === stat.mtimeMs) {
     cached.checkedAt = Date.now();
-    return cached.prompts;
+    return applySessionTitleOverride(cached.prompts, resolvedTitle);
   }
-  const prompts = parseSessionText(await fs.readFile(file, "utf8"), path.basename(file, ".jsonl"));
+  const prompts = applySessionTitleOverride(
+    parseSessionText(await fs.readFile(file, "utf8"), path.basename(file, ".jsonl")),
+    resolvedTitle
+  );
   sessionFileCache.set(file, { size: stat.size, modified: stat.mtimeMs, checkedAt: Date.now(), prompts });
   return prompts;
 }

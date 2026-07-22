@@ -41,6 +41,57 @@ function isSessionMetadata(text) {
 function taskTitle(text) {
     return text.replace(/\s+/g, " ").trim().slice(0, 96);
 }
+function sessionTitleFromPayload(event) {
+    const payload = object(event.payload) ?? {};
+    const payloadSession = object(payload.session);
+    const eventSession = object(event.session);
+    const payloadSessionMeta = object(payload.session_meta) ?? object(payload.sessionMeta);
+    const eventSessionMeta = object(event.session_meta) ?? object(event.sessionMeta);
+    const candidates = [
+        event.sessionTitle,
+        event.session_name,
+        event.sessionName,
+        event.session_title,
+        event.title,
+        event.name,
+        payload.sessionTitle,
+        payload.session_name,
+        payload.sessionName,
+        payload.session_title,
+        payload.title,
+        payloadSession?.title,
+        payloadSession?.name,
+        payloadSession?.sessionTitle,
+        payloadSession?.session_name,
+        payloadSession?.sessionName,
+        payloadSession?.session_title,
+        eventSession?.title,
+        eventSession?.name,
+        eventSession?.sessionTitle,
+        eventSession?.session_name,
+        eventSession?.sessionName,
+        eventSession?.session_title,
+        payloadSessionMeta?.title,
+        payloadSessionMeta?.name,
+        payloadSessionMeta?.sessionTitle,
+        payloadSessionMeta?.session_name,
+        payloadSessionMeta?.sessionName,
+        payloadSessionMeta?.session_title,
+        eventSessionMeta?.title,
+        eventSessionMeta?.name,
+        eventSessionMeta?.sessionTitle,
+        eventSessionMeta?.session_name,
+        eventSessionMeta?.sessionName,
+        eventSessionMeta?.session_title
+    ];
+    for (const candidate of candidates) {
+        if (typeof candidate === "string") {
+            const title = taskTitle(candidate);
+            if (title)
+                return title;
+        }
+    }
+}
 function parseSessionText(text, session) {
     const prompts = [];
     let sessionTitle;
@@ -63,6 +114,10 @@ function parseSessionText(text, session) {
             currentModel = typeof payload?.model === "string" ? payload.model : currentModel;
             const reasoning = object(payload?.reasoning) ?? object(payload?.reasoning_effort);
             currentReasoningEffort = typeof payload?.reasoning_effort === "string" ? payload.reasoning_effort : typeof payload?.reasoningEffort === "string" ? payload.reasoningEffort : typeof reasoning?.effort === "string" ? reasoning.effort : currentReasoningEffort;
+        }
+        const titleFromPayload = sessionTitleFromPayload(event);
+        if (titleFromPayload) {
+            sessionTitle = titleFromPayload;
         }
         const message = object(payload?.type === "message" ? payload : undefined);
         if (message?.role === "user") {
