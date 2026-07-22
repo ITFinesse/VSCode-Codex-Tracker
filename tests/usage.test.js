@@ -1,7 +1,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { parseSessionText } = require("../out/usage.js");
+const { parseRateLimitResponse, parseSessionText } = require("../out/usage.js");
 
 function event(timestamp, type, payload) {
   return JSON.stringify({ timestamp, type, payload });
@@ -77,4 +77,23 @@ test("parseSessionText skips malformed JSON lines", () => {
   ].join("\n");
 
   assert.equal(parseSessionText(text, "session-2").length, 1);
+});
+
+test("parseRateLimitResponse uses a weekly primary window when Codex supplies no 5-hour window", () => {
+  const limits = parseRateLimitResponse({
+    rateLimits: {
+      primary: { usedPercent: 23, windowDurationMins: 10_080, resetsAt: 1_785_258_181 },
+      secondary: null
+    }
+  });
+
+  assert.deepEqual(limits, {
+    fiveHour: {},
+    weekly: {
+      remainingPercent: 77,
+      resetAt: new Date("2026-07-28T17:03:01.000Z"),
+      windowDurationMins: 10_080
+    },
+    account: undefined
+  });
 });

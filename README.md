@@ -1,24 +1,43 @@
 # VSCode Codex Tracker
 
-VSCode Codex Tracker is a VS Code extension for monitoring local Codex usage
-in a focused status bar and panel dashboard.
+VSCode Codex Tracker is a VS Code extension for monitoring local Codex usage in a
+focused status bar and panel dashboard.
 
 ## Features
 
-- Live five-hour and weekly usage windows with reset times.
-- Status bar indicators that open the tracker panel.
-- Local prompt history with input, output, and cached token counts.
-- Estimated spend and usage charts.
-- Prompt, token, model, and efficiency views.
-- Date-range filters, custom ranges, search, sorting, and row limits.
-- Resizable and rearrangeable dashboard cards, with layout reset.
-- Configurable refresh interval, thresholds, colors, and history limit.
-- Account and plan details when available from the local Codex source.
-- Optional community leaderboard participation.
-- Anonymous leaderboard names use a generated numeric suffix so identities do
-  not all share the same public name.
-- Leaderboard view includes aggregate input tokens and prompt totals.
-- Leaderboard popup opens from the dashboard without leaving the panel.
+- Live Codex app-server quota tracking:
+  - five-hour window remaining and reset time.
+  - weekly window remaining and reset time.
+  - account/plan info when available from the app-server payload.
+- Accurate quota display:
+  - missing quota windows are shown as `N/A` instead of reusing stale data.
+  - no “last-known quota” fallback is used when live reads fail.
+- Automatic quota refresh behavior:
+  - event-driven refresh on `.jsonl` session file changes.
+  - additional refresh every minute to keep quota up-to-date.
+- Status-bar `5H` and `Weekly` indicators that open the tracker panel.
+- Local prompt history parsing from Codex session logs:
+  - input, output, and cached token totals.
+  - estimated cost summaries.
+- Dashboard metrics:
+  - charts for token and cost trends.
+  - searchable prompt list with per-row totals.
+- Appearance and usability:
+  - configurable warning/critical thresholds and colors.
+  - chart layout persistence with global or workspace scope.
+- Optional leaderboard participation using aggregate totals only.
+
+## Recent fixes
+
+- Fixed ENOENT startup and refresh failures caused by missing `codex` on `PATH`.
+  The extension now resolves the executable using:
+  - explicit `codexUsage.codexPath` (when provided),
+  - detected OpenAI Codex binary in installed extension locations,
+  - fallback to `codex` on `PATH`.
+- Improved quota diagnostics are now written to the output channel when app-server
+  reads fail or return incomplete data.
+- Removed stale-value masking in the quota path; windows now report accurately and
+  explicitly as `N/A` when unavailable.
 
 ## Privacy
 
@@ -26,9 +45,9 @@ Usage collection reads local Codex session data. Prompt text and token details
 remain local to the extension dashboard.
 
 Leaderboard participation is optional. When enabled, only a public name,
-cumulative aggregate input-token total, cumulative prompt count, and update
-metadata are submitted. Prompts, output text, file paths, account credentials,
-and raw authentication tokens are not submitted.
+cumulative aggregate input-token total, cumulative prompt count, and update metadata
+are submitted. Prompts, output text, file paths, account credentials, and raw
+authentication tokens are not submitted.
 
 Disable **Participate** in the dashboard settings at any time.
 
@@ -45,14 +64,15 @@ The extension is also published through the
 
 - `codexUsage.sessionsPath`: optional Codex session directory override.
 - `codexUsage.codexPath`: optional Codex executable path override.
-- `codexUsage.refreshIntervalSeconds`: dashboard refresh interval, from 10
-  seconds to 1 hour.
 - `codexUsage.historyLimit`: maximum number of recent prompts to display.
+- `codexUsage.outputDebug`: enable detailed internal logs for diagnostics.
 - `codexUsage.warningThresholdPercent`: warning threshold for usage windows.
 - `codexUsage.criticalThresholdPercent`: critical threshold for usage windows.
-- `codexUsage.warningColor`: warning status-bar color.
-- `codexUsage.criticalColor`: critical status-bar color.
-- `codexUsage.belowFullColor`: normal status-bar color.
+- `codexUsage.warningColor`: status-bar color used at warning threshold.
+- `codexUsage.criticalColor`: status-bar color used at critical threshold.
+- `codexUsage.belowFullColor`: status-bar color used when remaining usage is below
+  100% but above warning.
+- `codexUsage.chartOrganisation`: use `global` or `workspace` dashboard card layout.
 - `codexUsage.leaderboardEnabled`: enable or disable aggregate submissions.
 - `codexUsage.leaderboardName`: public leaderboard name.
 

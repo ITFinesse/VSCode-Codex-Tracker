@@ -67,6 +67,7 @@ let sessionFileListCache;
 let rateLimitsCache;
 let rateLimitsInFlight;
 const RATE_LIMIT_CACHE_MS = 60_000;
+const RATE_LIMIT_REFRESH_MS = 60_000;
 const modelPricing = new Map();
 let modelPricingLoadInFlight;
 let modelPricingLoaded = false;
@@ -114,6 +115,8 @@ function activate(context) {
     let refreshInFlight = false;
     let refreshQueued = false;
     let initialRefreshScheduled = false;
+    let rateLimitRefreshTimer;
+    let scheduleNextRateLimitRefresh = () => undefined;
     let ledgerValidationTimer;
     let ledgerValidationRunning = false;
     let initialLedgerValidationPending = true;
@@ -232,6 +235,14 @@ function activate(context) {
             debugLog("Running queued follow-up refresh.");
             void refresh();
         }
+        else {
+            scheduleNextRateLimitRefresh();
+        }
+    };
+    scheduleNextRateLimitRefresh = () => {
+        if (rateLimitRefreshTimer)
+            clearTimeout(rateLimitRefreshTimer);
+        rateLimitRefreshTimer = setTimeout(() => void refresh(), RATE_LIMIT_REFRESH_MS);
     };
     const scheduleInitialRefresh = () => {
         if (initialRefreshScheduled) {
@@ -353,7 +364,8 @@ function activate(context) {
     };
     watchSessions();
     context.subscriptions.push({ dispose: () => { if (sessionChangeTimer)
-            clearTimeout(sessionChangeTimer); if (ledgerValidationTimer)
+            clearTimeout(sessionChangeTimer); if (rateLimitRefreshTimer)
+            clearTimeout(rateLimitRefreshTimer); if (ledgerValidationTimer)
             clearTimeout(ledgerValidationTimer); sessionWatcher?.close(); } });
     void loadUsageCache(context).then((cached) => {
         if (cached) {
@@ -492,10 +504,15 @@ async function readLiveRateLimits(force = false) {
 }
 async function requestLiveRateLimits() {
     debugLog("Limits: requesting Codex app-server rate limits.");
+    output.info("Quota: requesting live 5-hour and weekly limits from Codex app-server.");
     const result = await readAppServerResult().catch((error) => {
-        debugWarn(`Limits: app-server request failed: ${String(error)}`);
+        const detail = error instanceof Error ? error.message : String(error);
+        debugWarn(`Limits: app-server request failed: ${detail}`);
+        output.warn(`Quota: Codex app-server request failed: ${detail}`);
         return undefined;
     });
+    if (result === undefined)
+        return undefined;
     const limits = (0, usage_1.parseRateLimitResponse)(result);
     if (!limits) {
         const warning = "Limits: Codex returned no usable quota windows.";
@@ -503,13 +520,18 @@ async function requestLiveRateLimits() {
             loggedQuotaWarnings.add(warning);
             debugWarn(warning);
         }
+        output.warn("Quota: Codex app-server replied, but the response did not contain usable quota windows.");
     }
-    else if (!hasLimitData(limits.fiveHour)) {
-        const warning = "Limits: Codex returned a weekly window but did not supply a 5-hour window; preserving the last 5-hour value when available.";
+    else if (!hasLimitData(limits.fiveHour) || !hasLimitData(limits.weekly)) {
+        const warning = "Limits: Codex returned an incomplete quota response.";
         if (!loggedQuotaWarnings.has(warning)) {
             loggedQuotaWarnings.add(warning);
             debugWarn(warning);
         }
+        output.warn(`Quota: Codex app-server returned incomplete data (5-hour=${hasLimitData(limits.fiveHour) ? "present" : "missing"}, weekly=${hasLimitData(limits.weekly) ? "present" : "missing"}).`);
+    }
+    else {
+        output.info("Quota: received live 5-hour and weekly limits from Codex app-server.");
     }
     return limits;
 }
@@ -852,18 +874,40 @@ async function resolveCodexCommand() {
     if (configured) {
         return configured;
     }
-    const openAiExtension = vscode.extensions.getExtension("openai.chatgpt");
-    if (openAiExtension) {
+    const bundledCodexPath = async (extensionPath) => {
         const platform = process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : "linux";
         const architecture = process.arch === "x64" ? "x86_64" : process.arch === "arm64" ? "aarch64" : process.arch;
         const executable = process.platform === "win32" ? "codex.exe" : "codex";
-        const bundled = path.join(openAiExtension.extensionPath, "bin", `${platform}-${architecture}`, executable);
+        const bundled = path.join(extensionPath, "bin", `${platform}-${architecture}`, executable);
         try {
             await fs.access(bundled);
             return bundled;
         }
         catch {
-            // Fall through to PATH for standalone Codex CLI installations.
+            return undefined;
+        }
+    };
+    const registered = [
+        vscode.extensions.getExtension("openai.chatgpt"),
+        ...vscode.extensions.all.filter((extension) => extension.id.toLowerCase() === "openai.chatgpt")
+    ].filter((extension) => Boolean(extension));
+    for (const extension of registered) {
+        const bundled = await bundledCodexPath(extension.extensionPath);
+        if (bundled)
+            return bundled;
+    }
+    const userHome = os.homedir();
+    for (const root of [path.join(userHome, ".vscode", "extensions"), path.join(userHome, ".vscode-insiders", "extensions")]) {
+        try {
+            const entries = await fs.readdir(root, { withFileTypes: true });
+            for (const entry of entries.filter((candidate) => candidate.isDirectory() && candidate.name.toLowerCase().startsWith("openai.chatgpt-")).sort((a, b) => b.name.localeCompare(a.name))) {
+                const bundled = await bundledCodexPath(path.join(root, entry.name));
+                if (bundled)
+                    return bundled;
+            }
+        }
+        catch {
+            // This VS Code installation may not use the standard per-user extension directory.
         }
     }
     return "codex";

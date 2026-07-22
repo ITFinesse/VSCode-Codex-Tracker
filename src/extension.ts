@@ -75,6 +75,7 @@ let rateLimitsCache:
   { expiresAt: number; value: { fiveHour: LimitWindow; weekly: LimitWindow; account?: AccountSummary } | undefined } | undefined;
 let rateLimitsInFlight: Promise<{ fiveHour: LimitWindow; weekly: LimitWindow; account?: AccountSummary } | undefined> | undefined;
 const RATE_LIMIT_CACHE_MS = 60_000;
+const RATE_LIMIT_REFRESH_MS = 60_000;
 const modelPricing = new Map<string, ModelPricing>();
 let modelPricingLoadInFlight: Promise<void> | undefined;
 let modelPricingLoaded = false;
@@ -126,6 +127,8 @@ export function activate(context: vscode.ExtensionContext): void {
   let refreshInFlight = false;
   let refreshQueued = false;
   let initialRefreshScheduled = false;
+  let rateLimitRefreshTimer: NodeJS.Timeout | undefined;
+  let scheduleNextRateLimitRefresh: () => void = () => undefined;
   let ledgerValidationTimer: NodeJS.Timeout | undefined;
   let ledgerValidationRunning = false;
   let initialLedgerValidationPending = true;
@@ -233,7 +236,13 @@ export function activate(context: vscode.ExtensionContext): void {
     if (runQueuedRefresh) {
       debugLog("Running queued follow-up refresh.");
       void refresh();
+    } else {
+      scheduleNextRateLimitRefresh();
     }
+  };
+  scheduleNextRateLimitRefresh = (): void => {
+    if (rateLimitRefreshTimer) clearTimeout(rateLimitRefreshTimer);
+    rateLimitRefreshTimer = setTimeout(() => void refresh(), RATE_LIMIT_REFRESH_MS);
   };
   const scheduleInitialRefresh = (): void => {
     if (initialRefreshScheduled) {
@@ -345,7 +354,7 @@ export function activate(context: vscode.ExtensionContext): void {
     } catch (error) { debugWarn(`Watcher: unavailable for ${sessionPath}: ${error instanceof Error ? error.message : String(error)}`); }
   };
   watchSessions();
-  context.subscriptions.push({ dispose: () => { if (sessionChangeTimer) clearTimeout(sessionChangeTimer); if (ledgerValidationTimer) clearTimeout(ledgerValidationTimer); sessionWatcher?.close(); } });
+  context.subscriptions.push({ dispose: () => { if (sessionChangeTimer) clearTimeout(sessionChangeTimer); if (rateLimitRefreshTimer) clearTimeout(rateLimitRefreshTimer); if (ledgerValidationTimer) clearTimeout(ledgerValidationTimer); sessionWatcher?.close(); } });
   void loadUsageCache(context).then((cached) => {
     if (cached) {
       snapshotCache = cached;
@@ -470,17 +479,25 @@ async function readLiveRateLimits(force = false): Promise<{ fiveHour: LimitWindo
 
 async function requestLiveRateLimits(): Promise<{ fiveHour: LimitWindow; weekly: LimitWindow; account?: AccountSummary } | undefined> {
   debugLog("Limits: requesting Codex app-server rate limits.");
+  output.info("Quota: requesting live 5-hour and weekly limits from Codex app-server.");
   const result = await readAppServerResult().catch((error) => {
-    debugWarn(`Limits: app-server request failed: ${String(error)}`);
+    const detail = error instanceof Error ? error.message : String(error);
+    debugWarn(`Limits: app-server request failed: ${detail}`);
+    output.warn(`Quota: Codex app-server request failed: ${detail}`);
     return undefined;
   });
+  if (result === undefined) return undefined;
   const limits = parseRateLimitResponse(result);
   if (!limits) {
     const warning = "Limits: Codex returned no usable quota windows.";
     if (!loggedQuotaWarnings.has(warning)) { loggedQuotaWarnings.add(warning); debugWarn(warning); }
-  } else if (!hasLimitData(limits.fiveHour)) {
-    const warning = "Limits: Codex returned a weekly window but did not supply a 5-hour window; preserving the last 5-hour value when available.";
+    output.warn("Quota: Codex app-server replied, but the response did not contain usable quota windows.");
+  } else if (!hasLimitData(limits.fiveHour) || !hasLimitData(limits.weekly)) {
+    const warning = "Limits: Codex returned an incomplete quota response.";
     if (!loggedQuotaWarnings.has(warning)) { loggedQuotaWarnings.add(warning); debugWarn(warning); }
+    output.warn(`Quota: Codex app-server returned incomplete data (5-hour=${hasLimitData(limits.fiveHour) ? "present" : "missing"}, weekly=${hasLimitData(limits.weekly) ? "present" : "missing"}).`);
+  } else {
+    output.info("Quota: received live 5-hour and weekly limits from Codex app-server.");
   }
   return limits;
 }
@@ -771,17 +788,36 @@ async function resolveCodexCommand(): Promise<string> {
   if (configured) {
     return configured;
   }
-  const openAiExtension = vscode.extensions.getExtension("openai.chatgpt");
-  if (openAiExtension) {
+  const bundledCodexPath = async (extensionPath: string): Promise<string | undefined> => {
     const platform = process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : "linux";
     const architecture = process.arch === "x64" ? "x86_64" : process.arch === "arm64" ? "aarch64" : process.arch;
     const executable = process.platform === "win32" ? "codex.exe" : "codex";
-    const bundled = path.join(openAiExtension.extensionPath, "bin", `${platform}-${architecture}`, executable);
+    const bundled = path.join(extensionPath, "bin", `${platform}-${architecture}`, executable);
     try {
       await fs.access(bundled);
       return bundled;
     } catch {
-      // Fall through to PATH for standalone Codex CLI installations.
+      return undefined;
+    }
+  };
+  const registered = [
+    vscode.extensions.getExtension("openai.chatgpt"),
+    ...vscode.extensions.all.filter((extension) => extension.id.toLowerCase() === "openai.chatgpt")
+  ].filter((extension): extension is vscode.Extension<unknown> => Boolean(extension));
+  for (const extension of registered) {
+    const bundled = await bundledCodexPath(extension.extensionPath);
+    if (bundled) return bundled;
+  }
+  const userHome = os.homedir();
+  for (const root of [path.join(userHome, ".vscode", "extensions"), path.join(userHome, ".vscode-insiders", "extensions")]) {
+    try {
+      const entries = await fs.readdir(root, { withFileTypes: true });
+      for (const entry of entries.filter((candidate) => candidate.isDirectory() && candidate.name.toLowerCase().startsWith("openai.chatgpt-")).sort((a, b) => b.name.localeCompare(a.name))) {
+        const bundled = await bundledCodexPath(path.join(root, entry.name));
+        if (bundled) return bundled;
+      }
+    } catch {
+      // This VS Code installation may not use the standard per-user extension directory.
     }
   }
   return "codex";
