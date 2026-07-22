@@ -56,6 +56,16 @@ exports.dashboardClient = String.raw `    const vscode = acquireVsCodeApi();
       $('updated').textContent = 'Last: ' + lastUpdated;
     };
     const filtered = ps => rangeDays ? ps.filter(p => p.time >= Date.now() - rangeDays * 86400000) : ps;
+    const setRangeDays = value => {
+      const nextRangeDays = Number(value);
+      if (![0, 1, 7, 30, 90].includes(nextRangeDays)) return;
+      rangeDays = nextRangeDays;
+      vscode.setState({ ...vscode.getState(), defaultRangeDays: rangeDays });
+      document.querySelectorAll('.range[data-days]').forEach(item => item.classList.toggle('active', Number(item.dataset.days) === rangeDays));
+      const rangeSelect = $('defaultRangeDays');
+      if (rangeSelect) rangeSelect.value = String(rangeDays);
+      render();
+    };
     const timeline = ps => [...ps].sort((a, b) => a.time - b.time);
     const setDateFormat = (locale, timeZone) => {
       const options = timeZone ? { timeZone } : undefined;
@@ -455,15 +465,11 @@ exports.dashboardClient = String.raw `    const vscode = acquireVsCodeApi();
       requestAnimationFrame(() => window.scrollTo(scrollPosition.left, scrollPosition.top));
     }
 
-    document.querySelectorAll('.range').forEach(button => {
-      button.onclick = () => {
-        document.querySelectorAll('.range').forEach(item => item.classList.remove('active'));
-        button.classList.add('active');
-        rangeDays = Number(button.dataset.days);
-        render();
-      };
+    document.querySelectorAll('.range[data-days]').forEach(button => {
+      button.onclick = () => setRangeDays(button.dataset.days);
     });
-    document.querySelectorAll('.range').forEach(button => button.classList.toggle('active', Number(button.dataset.days) === rangeDays));
+    document.querySelectorAll('.range[data-days]').forEach(button => button.classList.toggle('active', Number(button.dataset.days) === rangeDays));
+    $('defaultRangeDays').onchange = event => setRangeDays(event.target.value);
     const settingsToggle = $('settingsToggle');
     const settingsPanel = $('settings');
     const positionSettings = () => {
@@ -515,9 +521,6 @@ exports.dashboardClient = String.raw `    const vscode = acquireVsCodeApi();
       event.preventDefault();
       ['showSpend', 'showMetrics', 'showModels', 'showTokens', 'showPrompts'].forEach(key => visibility[key] = $(key).checked);
       vscode.setState({ ...vscode.getState(), visibility });
-      rangeDays = Number($('defaultRangeDays').value);
-      vscode.setState({ ...vscode.getState(), defaultRangeDays: rangeDays });
-      document.querySelectorAll('.range').forEach(item => item.classList.toggle('active', Number(item.dataset.days) === rangeDays));
       vscode.postMessage({
         command: 'saveAppearance',
         appearance: {
